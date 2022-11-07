@@ -125,8 +125,6 @@ pub const Viewer = struct {
                 _ = sdl2.SDL_RenderFillRectF(self.renderer, &rect);
             }
         }
-
-        _ = sdl2.SDL_RenderPresent(self.renderer);
     }
 
     fn renderForParams(self: *Self, comptime BigIntType: type) !void {
@@ -182,7 +180,7 @@ pub const Viewer = struct {
         var done: bool = false;
 
         _ = sdl2.SDL_RenderClear(self.renderer);
-        wait: while (!done) {
+        while (!done) {
             cont = try self.handleInput();
 
             if (cont) {
@@ -191,20 +189,24 @@ pub const Viewer = struct {
 
             readyMutex.lock();
             var block: ?BlockType = null;
+            var any = false;
             while (true) {
                 block = readyBlocks.popOrNull();
                 if (block == null) {
                     if (blocksLeft.load(.Acquire) == 0) {
                         done = true;
                         std.debug.print("time for calculation   = {d}s\n", .{@intToFloat(f64, (timer.lap() - timeStart)) / 1.0e9});
-                        readyMutex.unlock();
-                        break :wait;
                     }
                     break;
                 }
                 self.renderBlock(block.?.data);
+                any = true;
             }
             readyMutex.unlock();
+
+            if (any) {
+                _ = sdl2.SDL_RenderPresent(self.renderer);
+            }
         }
 
         if (!self.exit) {
