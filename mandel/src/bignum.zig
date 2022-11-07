@@ -35,12 +35,12 @@ pub fn faddShift(alloc: Allocator, cstr: *[]u8, words: u16, addend: NativeFloat,
     };
 }
 
-fn fadj_T(comptime BigIntType: type, alloc: Allocator, cstr: *[]u8, span: NativeFloat, offs: i32, range: u32) !void {
+fn fadj_T(comptime BigIntType: type, alloc: Allocator, cstr: *[]u8, span: NativeFloat, offs: i32, range: i32) !void {
     const f = try parseBig(BigIntType, cstr.*);
 
     const fspan: BigIntType = BigFixedFloat(BigIntType, 8).fromFloat(span);
 
-    const shift = std.math.log2_int(u32, range);
+    const shift = std.math.log2_int(u32, @intCast(u32, range));
 
     // var fstr = try printBig(alloc, BigIntType, fspan);
     // defer alloc.free(fstr);
@@ -62,9 +62,9 @@ fn fadj_T(comptime BigIntType: type, alloc: Allocator, cstr: *[]u8, span: Native
     cstr.* = res;
 }
 
-pub fn fadj(alloc: Allocator, cstr: *[]u8, words: u16, span: NativeFloat, offs: i32, range: u32) !void {
+pub fn fadj(alloc: Allocator, cstr: *[]u8, words: u16, span: NativeFloat, offs: i32, range: i32) !void {
     return switch (words) {
-        inline 1...MAXWORDS => |v| fadj_T(BigInt(64 * v), alloc, cstr, span, offs, range),
+        inline 1...MAXWORDS => |v| fadj_T(BigInt(64 * v), alloc, cstr, span, (offs) - (range >> 1), range),
         else => unreachable,
     };
 }

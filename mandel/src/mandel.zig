@@ -14,6 +14,7 @@ const rb = @import("rb.zig");
 pub const Params = struct {
     sx: u32,
     sy: u32,
+    blockSize: u16,
     zoom: u16,
     words: u16,
     magShift: u5,
@@ -81,6 +82,9 @@ pub const Params = struct {
 
             data: *BlockData,
 
+            // coord of box in viewport
+            px: u32,
+            py: u32,
             // how much to calculate
             maxIters: u32,
             // skip size from magnification
@@ -98,11 +102,11 @@ pub const Params = struct {
                 var recalc : u32 = 0;
                 var oy: u32 = 0;
                 while (!stop.*.load(.Unordered) and oy < data.sz) : (oy += rectSize) {
-                    const py = data.py + oy;
+                    const py = self.py + oy;
                     const fy = self.fys[py];
                     var ox: u32 = 0;
                     while (ox < data.sz) : (ox += rectSize) {
-                        const px = data.px + ox;
+                        const px = self.px + ox;
 
                         // already done?
                         const iterIndex = oy * data.sz + ox;
@@ -116,7 +120,11 @@ pub const Params = struct {
                         all += 1;
                     }
                 }
-                // if (all > 0) std.debug.print("recalc {d}%\n", . { @intToFloat(f32, recalc * 100) / @intToFloat(f32, all) });
+
+                if (all > 0) {
+                    const perc = recalc * 16 / all;
+                    std.debug.print("{s}", .{".123456789ABCDEF="[perc..perc+1]});
+                }
             }
         };
 
@@ -128,10 +136,8 @@ pub const Params = struct {
             fxs: []T,
             fys: []T,
 
-            pub fn init(alloc: Allocator, params: Params, storage: *MandelStorage) !Self {
+            pub fn init(alloc: Allocator, params: Params, layer: *MandelLayer) !Self {
                 // var params: Params = selfOrig;
-
-                var layer = try storage.*.ensure(params.zoom);
 
                 var fxs = std.ArrayList(T).init(alloc);
                 var fys = std.ArrayList(T).init(alloc);
@@ -142,14 +148,10 @@ pub const Params = struct {
                 const fy0 = try bignum.parseBig(T, params.cy);
 
                 // split drawscape into segments
-                const SEGS: u32 = 8;
+                const ps = params.blockSize;
+                const SEGS: u32 = @divExact(std.math.min(params.sx, params.sy), ps);
 
-                const ps = @intCast(u16, @divExact(std.math.min(params.sx, params.sy), SEGS));
-                std.debug.print("ps = {}\n", .{ ps });
-
-                // get room for results
-                const coord = try BigCoord.init(T, alloc, fx0, fy0);
-                const view = try layer.ensure(coord, ps);
+                std.debug.print("SEGS = {}, ps = {}\n", .{ SEGS, ps });
 
                 // calculate X and Y coords once
                 {
@@ -177,25 +179,21 @@ pub const Params = struct {
 
                 // get a calculation order, for quickest results
                 // in the interesting area of the center
-                var xys: [SEGS * SEGS]XY = undefined;
-                boxfill.fillBoxesInnerToOuter(&xys, SEGS);
+                var xys: []XY = try alloc.alloc(XY, SEGS*SEGS);
+                defer alloc.free(xys);
+                boxfill.fillBoxesInnerToOuter(xys, SEGS);
 
                 // per block...
                 for (xys) |xy| {
                     const px0 = xy.x * ps;
                     const py0 = xy.y * ps;
 
-                    const blockData = try view.ensure(XY{.x = px0, .y = py0});
+                    const coord = try BigCoord.init(T, alloc, fxs.items[px0], fys.items[py0]);
+                    const blockData = try layer.ensure(coord);
 
-                    // var blockData = BlockData{
-                    //     .px = px0,
-                    //     .py = py0,
-                    //     .sx = pxs,
-                    //     .sy = pys,
-                    //     .iters = undefined
-                    // };
-                    // try blockData.init(alloc);
                     try blocks.append(.{
+                        .px = px0,
+                        .py = py0,
                         .maxIters = params.iters,
                         .rectSize = rectSize,
                         .fxs = fxs.items,
@@ -225,10 +223,8 @@ pub const Params = struct {
 };
 
 /// Coordinate for marking the edge of a MandelViewpoint.
-/// Not intended to be allocated a lot (use iNNN).
 pub const BigCoord = struct {
     const Self = @This();
-    const EMPTY = Self{ .x = {}, .y = {} };
 
     x: []u64,
     y: []u64,
@@ -269,9 +265,8 @@ pub const BigCoord = struct {
 pub const BlockData = struct {
     const Self = @This();
 
-    /// pixel coord of box (relative to params.{cx,cy})
-    px: u16,
-    py: u16,
+    /// coord of box UL
+    coord: BigCoord,
 
     /// size of box in pixels
     sz: u16,
@@ -279,9 +274,8 @@ pub const BlockData = struct {
     /// iter counts (0 if not calculated, +ve = iter count, -ve = last failed count)
     iters: []i32,
 
-    pub fn init(self: *Self, alloc: Allocator, xy: XY, sz: u16) !void {
-        self.px = @intCast(u16, xy.x);
-        self.py = @intCast(u16, xy.y);
+    pub fn init(self: *Self, alloc: Allocator, coord: BigCoord, sz: u16) !void {
+        self.coord = coord;
         self.sz = sz;
         self.iters = try alloc.alloc(i32, sz * sz);
         std.mem.set(i32, self.iters, 0);
@@ -289,33 +283,30 @@ pub const BlockData = struct {
 
     pub fn deinit(self: @This(), alloc: Allocator) void {
         alloc.free(self.iters);
+        // coord not owned
     }
 };
 
-/// All the blocks relative to a given center coordinate,
-/// (coord, addressing the top-left of a quadrant in the lower-right side)
-/// where each block is addressed with an integer XY pixel coordinate
-/// relative to that coordinate.
-pub const MandelViewpoint = struct {
+/// All the data calculated at a given zoom level
+pub const MandelLayer = struct {
     const Self = @This();
 
     // we hold pointers to BlockData so the memory in the hashmap doesn't
     // move its contents for us...
-    const BlockMap = std.HashMap(XY, *BlockData, struct {
-        pub fn hash(_: anytype, a: XY) u64 { return a.hash(); }
-        pub fn eql(_: anytype, a: XY, b: XY) bool { return a.eql(b); }
+    const BlockMap = std.HashMap(BigCoord, *BlockData, struct {
+        pub fn hash(_: anytype, a: BigCoord) u64 { return a.hash(); }
+        pub fn eql(_: anytype, a: BigCoord, b: BigCoord) bool { return a.eql(b); }
     }, 80);
 
     alloc: Allocator,
-    /// center
-    coord: BigCoord,
+    zoom: u16,
     /// block size
     sz: u16,
     blocks: BlockMap,
 
-    pub fn init(self: *Self, alloc: Allocator, coord: BigCoord, sz: u16) void {
+    pub fn init(self: *Self, alloc: Allocator, zoom: u16, sz: u16) !void {
         self.alloc = alloc;
-        self.coord = coord;
+        self.zoom = zoom;
         self.sz = sz;
         self.blocks = BlockMap.init(alloc);
     }
@@ -326,51 +317,14 @@ pub const MandelViewpoint = struct {
     }
 
     /// Get the block
-    pub fn ensure(self: *Self, xy: XY) !*BlockData {
-        var res = try self.blocks.getOrPut(xy);
+    pub fn ensure(self: *Self, coord: BigCoord) !*BlockData {
+        var res = try self.blocks.getOrPut(coord);
         var blockPtr = res.value_ptr;
         if (!res.found_existing) {
             blockPtr.* = try self.alloc.create(BlockData);
-            try blockPtr.*.init(self.alloc, xy, self.sz);
+            try blockPtr.*.init(self.alloc, coord, self.sz);
         }
         return blockPtr.*;
-    }
-};
-
-/// All the data calculated at a given zoom level
-pub const MandelLayer = struct {
-    const Self = @This();
-    const EntryMap = std.HashMap(BigCoord, MandelViewpoint, struct {
-        pub fn hash(_: anytype, a: BigCoord) u64 { return a.hash(); }
-        pub fn eql(_: anytype, a: BigCoord, b: BigCoord) bool { return a.eql(b); }
-    }, 80);
-
-    alloc: Allocator,
-    zoom: u16,
-    views: EntryMap,
-
-    pub fn init(self: *Self, alloc: Allocator, zoom: u16) !void {
-        self.alloc = alloc;
-        self.zoom = zoom;
-        self.views = EntryMap.init(alloc);
-    }
-
-    pub fn deinit(self: *Self) void {
-        self.views.clearAndFree();
-        self.views.deinit();
-    }
-
-    /// Get storage for rendering around coord
-    pub fn ensure(self: *Self, coord: BigCoord, sz: u16) !*MandelViewpoint {
-        var res = try self.views.getOrPut(coord);
-        var entry = res.value_ptr;
-        if (!res.found_existing) {
-            var s = try coord.to_string(self.alloc);
-            defer self.alloc.free(s);
-            std.debug.print("new coord {s}\n", .{s});
-            entry.init(self.alloc, coord, sz);
-        }
-        return entry;
     }
 };
 
@@ -397,12 +351,12 @@ pub const MandelStorage = struct {
         self.layers.deinit();
     }
 
-    pub fn ensure(self: *Self, zoom: u16) !*MandelLayer {
+    pub fn ensure(self: *Self, zoom: u16, sz: u16) !*MandelLayer {
         var gop = try self.layers.getOrPut(zoom);
         var layer = gop.value_ptr;
         if (!gop.found_existing) {
             std.debug.print("new zoom level layer {}\n", .{zoom});
-            try layer.init(self.alloc, zoom);
+            try layer.init(self.alloc, zoom, sz);
         }
         return layer;
     }

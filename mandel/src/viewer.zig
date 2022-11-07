@@ -45,9 +45,12 @@ pub const Viewer = struct {
         var renderer = sdl2.SDL_CreateRenderer(window, -1, 0);
         if (renderer == null) return error.SDLError;
 
+        _ = sdl2.SDL_SetRenderDrawBlendMode(renderer, sdl2.SDL_BLENDMODE_BLEND);
+
         var params = Params{
             .sx = 1024,
             .sy = 1024,
+            .blockSize = 128,
             // .cx = 0.285, .cy = 0.01
             // .cx = 2.86953125e-01, .cy = 1.20751953125e-02,
             // .cx = 2.869521827343851e-01, .cy = 1.207519461400807e-02,
@@ -104,23 +107,24 @@ pub const Viewer = struct {
         sdl2.SDL_DestroyWindow(self.window);
     }
 
-    fn renderBlock(self: Self, block: *mandel.BlockData) void {
+    fn renderBlock(self: Self, bpx: u32, bpy: u32, block: *mandel.BlockData) void {
         var rect : sdl2.SDL_FRect = undefined;
 
         const rectSize: u32 = @as(u32, 1) << self.params.magShift;
         var oy: u32 = 0;
         while (oy < block.sz) : (oy += rectSize) {
-            const py = block.py + oy;
+            const py = bpy + oy;
             var ox: u32 = 0;
             while (ox < block.sz) : (ox += rectSize) {
-                const px = block.px + ox;
+                const px = bpx + ox;
 
                 const iterIndex = oy * block.sz + ox;
                 const current = block.iters[iterIndex];
 
-                var g: u8 = @intCast(u8, if (current < 0) 0 else current & 0xff);
+                var g: u8 = @intCast(u8, if (current < 0 or current > self.params.iters) 0 else current & 0xff);
+                const a = @intCast(u8, if (current < 0) 0x0 else if (current > self.params.iters) 0xff else @intCast(u32, (@intCast(u32, current) * 255 / self.params.iters)) & 0xff);
                 g = (g << 7) | (g >> 1);
-                _ = sdl2.SDL_SetRenderDrawColor(self.renderer, g, g, g, 255);
+                _ = sdl2.SDL_SetRenderDrawColor(self.renderer, g, g, g, a);
 
                 rect.x = @intToFloat(f32, px);
                 rect.y = @intToFloat(f32, py);
@@ -134,16 +138,21 @@ pub const Viewer = struct {
     fn renderForParams(self: *Self, comptime BigIntType: type) !void {
         std.debug.print("Rendering with BigInt({s}) at x= {s}, y= {s}, zoom= {}, iters= {}...\n", .{ @typeName(BigIntType), self.params.cx, self.params.cy, self.params.zoom, self.params.iters });
 
+        _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 255);
+        _ = sdl2.SDL_RenderClear(self.renderer);
+
         var timer = try std.time.Timer.start();
         const timeStart = timer.lap();
 
-        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage);
+        var layer = try self.storage.ensure(self.params.zoom, self.params.blockSize);
+
+        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, layer);
         defer workLoad.deinit(self.alloc);
 
         std.debug.print("time for making blocks = {}\n", .{timer.lap() - timeStart});
 
         for (workLoad.blocks) |block| {
-            self.renderBlock(block.data);
+            self.renderBlock(block.px, block.py, block.data);
         }
 
         std.debug.print("time for first block draw = {}\n", .{timer.lap() - timeStart});
@@ -209,7 +218,7 @@ pub const Viewer = struct {
                     }
                     break;
                 }
-                self.renderBlock(block.?.data);
+                self.renderBlock(block.?.px, block.?.py, block.?.data);
                 any = true;
             }
             readyMutex.unlock();
@@ -236,41 +245,41 @@ pub const Viewer = struct {
         var event: sdl2.SDL_Event = undefined;
         var cont = false;
         while (sdl2.SDL_WaitEventTimeout(&event, 10) != 0) {
-            var words = ps.*.words;
-            var span = ps.*.span();
+            var words = ps.words;
+            var span = ps.span();
             if (event.type == sdl2.SDL_QUIT) {
                 self.exit = true;
             } else if (event.type == sdl2.SDL_KEYDOWN) {
                 var ke = @ptrCast(*sdl2.SDL_KeyboardEvent, &event);
                 cont = true;
-                const shiftAmt: u6 = if ((ke.keysym.mod & sdl2.KMOD_LSHIFT) != 0) 4 else 1;
+                const shiftAmt: u5 = if ((ke.keysym.mod & sdl2.KMOD_LSHIFT) != 0) 4 else 1;
                 _ = switch (ke.keysym.sym) {
                     sdl2.SDLK_ESCAPE => { self.exit = true; std.debug.print("Cancelling...\n", .{}); },
-                    sdl2.SDLK_PLUS, sdl2.SDLK_EQUALS => ps.*.zoom += 1,
-                    sdl2.SDLK_MINUS => ps.*.zoom = if (ps.*.zoom > 1) ps.*.zoom - 1 else 0,
-                    sdl2.SDLK_UP => try bignum.faddShift(self.alloc, &ps.*.cy, words, -span, shiftAmt),
-                    sdl2.SDLK_DOWN => try bignum.faddShift(self.alloc, &ps.*.cy, words, span, shiftAmt),
-                    sdl2.SDLK_LEFT => try bignum.faddShift(self.alloc, &ps.*.cx, words, -span, shiftAmt),
-                    sdl2.SDLK_RIGHT => try bignum.faddShift(self.alloc, &ps.*.cx, words, span, shiftAmt),
-                    sdl2.SDLK_PAGEDOWN => ps.*.iters = std.math.max(1, ps.*.iters -% 50),
-                    sdl2.SDLK_PAGEUP => ps.*.iters += 50,
-                    sdl2.SDLK_LEFTBRACKET => ps.*.words = if (words > 1) words - 1 else 1,
-                    sdl2.SDLK_RIGHTBRACKET => ps.*.words += 1,
+                    sdl2.SDLK_PLUS, sdl2.SDLK_EQUALS => ps.zoom += 1,
+                    sdl2.SDLK_MINUS => ps.zoom = if (ps.zoom > 1) ps.zoom - 1 else 0,
+                    sdl2.SDLK_UP => try bignum.faddShift(self.alloc, &ps.cy, words, -span, shiftAmt),
+                    sdl2.SDLK_DOWN => try bignum.faddShift(self.alloc, &ps.cy, words, span, shiftAmt),
+                    sdl2.SDLK_LEFT => try bignum.faddShift(self.alloc, &ps.cx, words, -span, shiftAmt),
+                    sdl2.SDLK_RIGHT => try bignum.faddShift(self.alloc, &ps.cx, words, span, shiftAmt),
+                    sdl2.SDLK_PAGEDOWN => ps.iters = @intCast(u32, std.math.max(0, @intCast(i32, ps.iters) - 50)),
+                    sdl2.SDLK_PAGEUP => ps.iters += 50,
+                    sdl2.SDLK_LEFTBRACKET => ps.words = if (words > 1) words - 1 else 1,
+                    sdl2.SDLK_RIGHTBRACKET => ps.words += 1,
                     sdl2.SDLK_SPACE => {
-                        try bignum.falign(self.alloc, &ps.*.cx, words);
-                        try bignum.falign(self.alloc, &ps.*.cy, words);
+                        try bignum.falign(self.alloc, &ps.cx, words);
+                        try bignum.falign(self.alloc, &ps.cy, words);
                     },
                     sdl2.SDLK_F5 => {
-                        try ps.*.writeConfig(self.alloc, self.saveFile);
+                        try ps.writeConfig(self.alloc, self.saveFile);
                         cont = false;
                     },
                     sdl2.SDLK_F9 => {
-                        if (ps.*.readConfig(self.alloc, self.saveFile)) {} else |err| {
+                        if (ps.readConfig(self.alloc, self.saveFile)) {} else |err| {
                             std.debug.print("Failed to load: {}\n", .{err});
                             cont = false;
                         }
                     },
-                    '0'...'9' => |v| ps.*.magShift = @intCast(u5, v - '0'),
+                    '0'...'9' => |v| ps.magShift = @intCast(u5, v - '0'),
                     else => cont = false,
                 };
             } else if (event.type == sdl2.SDL_MOUSEBUTTONDOWN) {
@@ -278,8 +287,8 @@ pub const Viewer = struct {
                 if (me.button == 1) {
                     cont = true;
                     // recenter on mouse position
-                    try bignum.fadj(self.alloc, &ps.*.cy, words, span, me.y - @intCast(i32, ps.*.sy >> 1), ps.*.sy);
-                    try bignum.fadj(self.alloc, &ps.*.cx, words, span, me.x - @intCast(i32, ps.*.sx >> 1), ps.*.sx);
+                    try bignum.fadj(self.alloc, &ps.cy, words, span, (me.y + (ps.blockSize >> 1)) & ~(ps.blockSize - 1), @intCast(i32, ps.sy));
+                    try bignum.fadj(self.alloc, &ps.cx, words, span, (me.x + (ps.blockSize >> 1)) & ~(ps.blockSize - 1), @intCast(i32, ps.sx));
                 }
             }
         }
