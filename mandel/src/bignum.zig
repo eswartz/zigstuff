@@ -224,7 +224,7 @@ pub fn BigFixedFloat(comptime BigFloatType: type, comptime intBits: u16) type {
         /// integer indicating the iteration count before exit.
         /// Else, return a negative number indicating the negative of how
         /// many iterations were attempted.
-        pub fn calcMandelbrot(creal: BigFloatType, cimag: BigFloatType, maxIters: i32) i32 {
+        pub fn calcMandelbrot(creal: BigFloatType, cimag: BigFloatType, maxIters: u32) i32 {
             const four: BigFloatType = fromFloat(4.0);
             var iters: i32 = 0;
             var real = creal;
