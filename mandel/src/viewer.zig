@@ -30,6 +30,7 @@ pub const Viewer = struct {
     params: Params,
     exit: bool,
     saveFile : []u8,
+    storage : mandel.MandelStorage,
 
     pub fn init(alloc: Allocator) !Self {
         sdl2.SDL_SetMainReady();
@@ -76,6 +77,8 @@ pub const Viewer = struct {
             if (argIter.next()) |arg| { saveName = try alloc.dupe(u8, arg); std.debug.print("save name = {s}\n", .{saveName}); }
         }
 
+        var storage = try mandel.MandelStorage.init(alloc);
+
         return Viewer{
             .alloc = alloc,
             .window = window.?,
@@ -83,6 +86,7 @@ pub const Viewer = struct {
             .params = params,
             .exit = false,
             .saveFile = saveName,
+            .storage = storage
         };
     }
 
@@ -100,18 +104,18 @@ pub const Viewer = struct {
         sdl2.SDL_DestroyWindow(self.window);
     }
 
-    fn renderBlock(self: Self, block: anytype) void {
+    fn renderBlock(self: Self, block: *mandel.BlockData) void {
         var rect : sdl2.SDL_FRect = undefined;
 
         const rectSize: u32 = @as(u32, 1) << self.params.magShift;
         var oy: u32 = 0;
-        while (oy < block.sy) : (oy += rectSize) {
+        while (oy < block.sz) : (oy += rectSize) {
             const py = block.py + oy;
             var ox: u32 = 0;
-            while (ox < block.sx) : (ox += rectSize) {
+            while (ox < block.sz) : (ox += rectSize) {
                 const px = block.px + ox;
 
-                const iterIndex = oy * block.sx + ox;
+                const iterIndex = oy * block.sz + ox;
                 const current = block.iters[iterIndex];
 
                 var g: u8 = @intCast(u8, if (current < 0) 0 else current & 0xff);
@@ -133,10 +137,16 @@ pub const Viewer = struct {
         var timer = try std.time.Timer.start();
         const timeStart = timer.lap();
 
-        var workLoad = try Params.BlockMaker(BigIntType).init(self.alloc, self.params);
+        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage);
         defer workLoad.deinit(self.alloc);
 
         std.debug.print("time for making blocks = {}\n", .{timer.lap() - timeStart});
+
+        for (workLoad.blocks) |block| {
+            self.renderBlock(block.data);
+        }
+
+        std.debug.print("time for first block draw = {}\n", .{timer.lap() - timeStart});
 
         const BlockType = @TypeOf(workLoad.blocks[0]);
 
@@ -169,7 +179,8 @@ pub const Viewer = struct {
 
         var nt: u32 = 0;
         while (nt < NTHREADS) : (nt += 1) {
-            const slice = workLoad.blocks[nt * PERTHREAD .. (nt + 1) * PERTHREAD];
+            const start = nt * PERTHREAD;
+            const slice = workLoad.blocks[start..start+PERTHREAD];
             threads[nt] = try std.Thread.spawn(.{}, ThreadInfo.calcThread, .{ &stop, &readyBlocks, &readyMutex, &blocksLeft, slice });
         }
 
@@ -179,7 +190,6 @@ pub const Viewer = struct {
         var cont: bool = false;
         var done: bool = false;
 
-        _ = sdl2.SDL_RenderClear(self.renderer);
         while (!done) {
             cont = try self.handleInput();
 

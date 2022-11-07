@@ -165,12 +165,10 @@ pub fn parseBig(comptime IntType: type, str: []const u8) !IntType {
     return v;
 }
 
-pub fn printBig(alloc: Allocator, comptime IntType: type, x: IntType) ![]u8 {
+pub fn printBigArray(alloc: Allocator, words: []const u64) ![]u8 {
     var list = std.ArrayList(u8).init(alloc);
-    // defer list.deinit();
 
-    const wordCount = @typeInfo(IntType).Int.bits >> 6;
-    var words = @ptrCast([*]const u64, &x)[0..wordCount];
+    const wordCount = words.len;
 
     var vidx: u32 = 0;
     while (vidx < wordCount) {
@@ -178,6 +176,17 @@ pub fn printBig(alloc: Allocator, comptime IntType: type, x: IntType) ![]u8 {
         vidx += 1;
     }
     return list.toOwnedSlice();
+}
+
+/// Returns slice, not copied
+pub fn intWords(comptime IntType: type, x: IntType) []const u64 {
+    const wordCount = @typeInfo(IntType).Int.bits >> 6;
+    var words = @ptrCast([*]const u64, &x)[0..wordCount];
+    return words;
+}
+
+pub fn printBig(alloc: Allocator, comptime IntType: type, x: IntType) ![]u8 {
+    return printBigArray(alloc, intWords(IntType, x));
 }
 
 pub fn BigFixedFloat(comptime BigFloatType: type, comptime intBits: u16) type {
