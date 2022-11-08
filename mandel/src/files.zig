@@ -47,14 +47,37 @@ pub const RenderedFile = struct {
         try self.load_version_1_1(reader);
     }
 
+    fn decompress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []const i32) !void {
+        _ = psy;
+        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage);
+        defer workLoad.deinit(self.storage.alloc);
+
+        std.debug.print("iters={}, psx={}, psy={}\n", .{ iters.len, self.params.sx, self.params.sy });
+
+        const ps = self.params.blockSize;
+        var c : u32 = 0;
+        for (workLoad.blocks) |block| {
+            const px = block.px;
+            const py = block.py;
+            std.debug.print("block={*}\n", .{ block.data });
+            var oy : u32 = 0;
+            while (oy < ps) : (oy += 1) {
+                var ox : u32 = 0;
+                while (ox < ps) : (ox += 1) {
+                    const iterBE : i32 = iters[(py + oy) * psx + (px + ox)];
+                    const iter = @byteSwap(iterBE);
+                    block.data.setIter(ox, oy, iter);
+                    c += 1;
+                }
+            }
+        }
+    }
+
     fn load_version_1_1(self: *Self, reader: File.Reader) !void {
         var cxStr = try self.read_string(reader);
         var cyStr = try self.read_string(reader);
 
         self.params.zoom = try std.fmt.parseInt(u16, try self.read_string(reader), 10);
-
-        // self.storage.alloc.free(self.params.cx);
-        // self.storage.alloc.free(self.params.cy);
 
         var bits = self.params.getDefaultIntSize() << 6;
         self.params.words = bits >> 6;
@@ -65,41 +88,22 @@ pub const RenderedFile = struct {
         _ = minIters;
         self.params.iters = try std.fmt.parseInt(u32, try self.read_string(reader), 10);
 
-        self.params.sx = try std.fmt.parseInt(u32, try self.read_string(reader), 10);
-        self.params.sy = try std.fmt.parseInt(u32, try self.read_string(reader), 10);
-
-        // const ps = self.params.blockSize;
-        // const SEGS: u32 = @divExact(std.math.min(params.sx, params.sy), ps);
-        // const floatStep = BigFloatType.fromFloat(params.span() / @intToFloat(bignum.NativeFloat, ps * SEGS));
-
-        var layer = try self.storage.ensure(self.params.zoom, self.params.blockSize);
+        const psx = try std.fmt.parseInt(u32, try self.read_string(reader), 10);
+        const psy = try std.fmt.parseInt(u32, try self.read_string(reader), 10);
+        self.params.sx = psx;
+        self.params.sy = psy;
 
         var zstr = try std.compress.gzip.gzipStream(self.arena, reader);
-        var exp = self.params.sx * self.params.sy;
-        const buf = try zstr.reader().readAllAlloc(self.arena, exp*4);
-        const iters = @ptrCast([*]align(1) i32, buf)[0..exp];
+        var exp = psx * psy;
 
-        const blockSize = self.params.blockSize;
-        const floatStep = self.params.pixelSpan();
-        var px : u32 = 0;
-        var py : u32 = 0;
-        var ix : i1024 = 0;
-        var iy : i1024 = 0;
-        var block : *mandel.BlockData = undefined;
-        for (iters) |it| {
-            // std.debug.print("{x}{s}", .{ @byteSwap(it), if (c%16 == 15) "\n" else " " }); c+= 1;
-            if ((px & (blockSize-1)) == 0) {
-                block = try layer.ensure(mandel.BigCoord.init(ix, iy));
-            }
-            block.setIter(px & (blockSize-1), py & (blockSize-1), @byteSwap(it));
-            px += 1;
-            ix += floatStep;
-            if (px >= self.params.sx) {
-                px = 0;
-                py += 1;
-                iy += floatStep;
-            }
-        }
+        var iters : []i32 = try self.arena.alloc(i32, exp);
+        const end = try zstr.reader().readAll(@ptrCast([*]u8, iters)[0..exp*4]);
+        if (end < exp * 4) return error.FileFormatError;
+
+        try switch (self.params.words) {
+            inline 1...bignum.MAXWORDS => |w| self.decompress_blocks(bignum.BigInt(w << 6), psx, psy, iters),
+            else => unreachable,
+        };
     }
 
     fn read_string(self: Self, reader : File.Reader) ![]u8 {
@@ -114,6 +118,7 @@ pub const RenderedFile = struct {
     fn strlen(s:[*c]u8) usize {
         var l : usize = 0;
         while (s[l] != 0) l += 1;
+        std.debug.print("len: {}\n", .{l});
         return l;
     }
 
@@ -124,15 +129,20 @@ pub const RenderedFile = struct {
         defer gmp.mpf_clear(&mpf);
 
         gmp.mpf_set_prec(&mpf, bits + 8);
-        if (gmp.mpf_set_str(&mpf, str.ptr, 10) != 0)
-            return error.InvalidFloat;
+        _ = gmp.mpf_set_str(&mpf, str.ptr, 10);
 
         // scale to fixed int size, where the top 8 bits are the integral part
         gmp.mpf_mul_2exp(&mpf, &mpf, bits - 8);
         {
-            var dec : gmp.mp_exp_t = undefined;
-            var strptr = gmp.mpf_get_str(null, &dec, 16, 256, &mpf);
-            std.debug.print("xx> {s}.{s}\n", .{strptr[0..@intCast(usize, dec)], strptr[@intCast(usize, dec)+1..strlen(strptr)]});
+            var exp : gmp.mp_exp_t = undefined;
+            const strptr = gmp.mpf_get_str(null, &exp, 16, 0, &mpf);
+            const slen = if (exp != 0 and strptr != null) strlen(strptr) else 0;
+            if (exp == 0)
+                std.debug.print("xx> 0\n", .{})
+            else if (exp < slen)
+                std.debug.print("xx> {s}.{s}\n", .{strptr[0..@intCast(usize, exp)], strptr[@intCast(usize, exp)+1..slen]})
+            else
+                std.debug.print("xx> {s}.0+\n", .{strptr[0..slen]});
         }
 
         // make into int

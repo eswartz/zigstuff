@@ -61,7 +61,7 @@ pub const Params = struct {
     /// Get number of words needed
     pub fn getDefaultIntSize(self: Params) u16 {
         const zoom = self.zoom;
-        const size: u16 = (zoom + 64 + std.math.log2_int(u32, self.sx)) >> 6;
+        const size: u16 = (zoom + 64 + std.math.log2_int(u32, self.sx) + 63) >> 6;
         std.debug.print("zoom={}, isize={}\n", .{ zoom, size });
         return size;
     }
@@ -181,7 +181,8 @@ pub const Params = struct {
                 var fxs = std.ArrayList(T).init(alloc);
                 var fys = std.ArrayList(T).init(alloc);
 
-                std.debug.print("span = {}\n", .{params.span()});
+                const pspan = params.span();
+                std.debug.print("span = {}\n", .{pspan});
 
                 const fx0 = try bignum.parseBig(T, params.cx);
                 const fy0 = try bignum.parseBig(T, params.cy);
@@ -189,12 +190,25 @@ pub const Params = struct {
                 // split drawscape into segments
                 const ps = params.blockSize;
                 const SEGS: u32 = @divExact(std.math.min(params.sx, params.sy), ps);
-                const floatStep = BigFloatType.fromFloat(params.span() / @intToFloat(bignum.NativeFloat, ps * SEGS));
+                const div = @intToFloat(bignum.NativeFloat, ps * SEGS);
+                var step = pspan / div;
+                // std.debug.print("SEGS = {}, ps = {}, span = {}\n", .{ SEGS, ps, pspan });
+                std.debug.print("SEGS = {}, ps = {}, span = {}, div = {}, step = {}\n", .{ SEGS, ps, pspan, div, step });
+                const floatStep = BigFloatType.fromFloat(step);
+                // var floatStep = BigFloatType.fromFloat(pspan);
+                // {
+                //     var i : u32 = ps * SEGS;
+                //     while (i > 1) : (i >>= 1) floatStep >>= 1;
+                //     if (floatStep == 0) {
+                //         unreachable;
+                //     }
+                // }
 
                 var layer = try storage.ensure(params.zoom, params.blockSize);
                 var layerM1 = if (params.zoom > 0) storage.get(params.zoom - 1) else null;
 
-                // std.debug.print("SEGS = {}, ps = {}\n", .{ SEGS, ps });
+                var fss = try bignum.printBig(alloc, T, floatStep); defer alloc.free(fss);
+                std.debug.print("fss = {s}\n", .{ fss });
 
                 // calculate X and Y coords once
                 {
@@ -406,7 +420,7 @@ pub const MandelLayer = struct {
     /// Get the block
     pub fn ensure(self: *Self, coord: BigCoord) !*BlockData {
         var cs = try coord.to_string(self.alloc); defer self.alloc.free(cs);
-        std.debug.print("coord={s}\n", .{cs});
+        // std.debug.print("coord={s}\n", .{cs});
         var res = try self.blocks.getOrPut(coord);
         var blockPtr = res.value_ptr;
         if (!res.found_existing) {

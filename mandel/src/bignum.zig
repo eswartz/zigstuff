@@ -225,8 +225,9 @@ pub fn BigFixedFloat(comptime BigFloatType: type, comptime intBits: u16) type {
             // return f;
 
             var av: NativeFloat = std.math.fabs(v);
+            const fexp = std.math.frexp(av);
+            _ = fexp;
             var f: BigFloatType = @as(BigFloatType, @floatToInt(NativeInt, av));
-            // f <<= intBits;
             var i: isize = mantissaBits;
             while (i > 0) : (i -= 1) {
                 av -= @trunc(av);
