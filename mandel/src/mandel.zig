@@ -22,13 +22,46 @@ pub const Params = struct {
     cx: []u8,
     cy: []u8,
 
+    pub fn init(alloc: Allocator) !Params {
+        return Params{
+            .sx = 1024,
+            .sy = 1024,
+            .blockSize = 128,
+            .cx = try alloc.dupe(u8, ".0000000000000000"),
+            .cy = try alloc.dupe(u8, ".0000000000000000"),
+            .zoom = 0,
+            .magShift = 2,
+            .words = 1,
+            .iters = 300,
+        };
+    }
+
+    pub fn deinit(self: *@This(), alloc: Allocator) void {
+        alloc.free(self.cx);
+        alloc.free(self.cy);
+    }
+
     pub fn span(self: Params) bignum.NativeFloat {
         return std.math.scalbn(@floatCast(bignum.NativeFloat, 4.0), -@intCast(i16, self.zoom));
     }
 
+    pub fn pixelSpan(self: Params) i1024 {
+        const ps = self.blockSize;
+        const SEGS: u32 = @divExact(std.math.min(self.sx, self.sy), ps);
+        var i : i1032 = 1;
+        i <<= @intCast(u11, (self.words << 6) + 2);
+        i >>= @intCast(u11, self.zoom);
+        i >>= std.math.log2_int(u32, SEGS);
+        // const floatStep = BigFloatType.fromFloat(params.span() / @intToFloat(bignum.NativeFloat, ps * SEGS));
+
+
+        return @intCast(i1024, i);
+    }
+
+    /// Get number of words needed
     pub fn getDefaultIntSize(self: Params) u16 {
         const zoom = self.zoom;
-        const size: u16 = (zoom + 63) >> 6;
+        const size: u16 = (zoom + 64 + std.math.log2_int(u32, self.sx)) >> 6;
         std.debug.print("zoom={}, isize={}\n", .{ zoom, size });
         return size;
     }
@@ -158,7 +191,7 @@ pub const Params = struct {
                 const SEGS: u32 = @divExact(std.math.min(params.sx, params.sy), ps);
                 const floatStep = BigFloatType.fromFloat(params.span() / @intToFloat(bignum.NativeFloat, ps * SEGS));
 
-                var layer = try storage.ensure(params.zoom, params.blockSize, try alloc.dupe(u64, bignum.intWords(T, floatStep)));
+                var layer = try storage.ensure(params.zoom, params.blockSize);
                 var layerM1 = if (params.zoom > 0) storage.get(params.zoom - 1) else null;
 
                 // std.debug.print("SEGS = {}, ps = {}\n", .{ SEGS, ps });
@@ -343,16 +376,13 @@ pub const MandelLayer = struct {
     zoom: u16,
     /// block size (pixels)
     sz: u16,
-    /// distance between blocks
-    blockDist: []u64,
     /// cache of blocks
     blocks: BlockMap,
 
-    pub fn init(self: *Self, alloc: Allocator, zoom: u16, sz: u16, blockDist: []u64) !void {
+    pub fn init(self: *Self, alloc: Allocator, zoom: u16, sz: u16) !void {
         self.alloc = alloc;
         self.zoom = zoom;
         self.sz = sz;
-        self.blockDist = blockDist;
         self.blocks = BlockMap.init(alloc);
     }
 
@@ -360,13 +390,12 @@ pub const MandelLayer = struct {
         {
             var it = self.blocks.iterator();
             while (it.next()) |ent| {
+                // self.alloc.destroy(ent.key_ptr);
                 ent.value_ptr.*.deinit(self.alloc);
-                // self.alloc.destroy(ent.value_ptr);
             }
         }
         self.blocks.clearAndFree();
         self.blocks.deinit();
-        self.alloc.free(self.blockDist);
     }
 
     /// Get the block
@@ -377,7 +406,7 @@ pub const MandelLayer = struct {
     /// Get the block
     pub fn ensure(self: *Self, coord: BigCoord) !*BlockData {
         var cs = try coord.to_string(self.alloc); defer self.alloc.free(cs);
-        // std.debug.print("coord={s}\n", .{cs});
+        std.debug.print("coord={s}\n", .{cs});
         var res = try self.blocks.getOrPut(coord);
         var blockPtr = res.value_ptr;
         if (!res.found_existing) {
@@ -423,13 +452,13 @@ pub const MandelStorage = struct {
         return self.layers.get(zoom);
     }
 
-    pub fn ensure(self: *Self, zoom: u16, sz: u16, blockDist : []u64) !*MandelLayer {
+    pub fn ensure(self: *Self, zoom: u16, sz: u16) !*MandelLayer {
         var gop = try self.layers.getOrPut(zoom);
         var layer = gop.value_ptr;
         if (!gop.found_existing) {
             std.debug.print("new zoom level layer {}\n", .{zoom});
             layer.* = try self.alloc.create(MandelLayer);
-            try layer.*.init(self.alloc, zoom, sz, blockDist);
+            try layer.*.init(self.alloc, zoom, sz);
         }
         return layer.*;
     }

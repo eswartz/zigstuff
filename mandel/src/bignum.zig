@@ -177,7 +177,7 @@ pub fn printBigArray(alloc: Allocator, words: []const u64) ![]u8 {
     return list.toOwnedSlice();
 }
 
-/// Returns slice, not copied (hence inlined)
+/// Returns reference to slice, not copied (hence, must be inlined)
 pub inline fn intWords(comptime IntType: type, x: IntType) []const u64 {
     const wordCount = @typeInfo(IntType).Int.bits >> 6;
     const words = @ptrCast([*]const u64, &x)[0..wordCount];

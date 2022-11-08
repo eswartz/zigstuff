@@ -12,14 +12,10 @@ const XY = boxfill.XY;
 const mandel = @import("mandel.zig");
 const Params = mandel.Params;
 
-const sdl2 = @cImport({
-    @cInclude("SDL2/SDL.h");
-});
+const cimports = @import("cimports.zig");
+const sdl2 = cimports.sdl2;
 
-const RectColor = struct {
-    rect: sdl2.SDL_FRect,
-    cnt: u32,
-};
+const files = @import("files.zig");
 
 pub const Viewer = struct {
     const Self = @This();
@@ -30,6 +26,7 @@ pub const Viewer = struct {
     params: Params,
     exit: bool,
     saveFile : []u8,
+    dataFile : []u8,
     storage : mandel.MandelStorage,
 
     pub fn init(alloc: Allocator) !Self {
@@ -47,37 +44,15 @@ pub const Viewer = struct {
 
         _ = sdl2.SDL_SetRenderDrawBlendMode(renderer, sdl2.SDL_BLENDMODE_BLEND);
 
-        var params = Params{
-            .sx = 1024,
-            .sy = 1024,
-            .blockSize = 128,
-            // .cx = 0.285, .cy = 0.01
-            // .cx = 2.86953125e-01, .cy = 1.20751953125e-02,
-            // .cx = 2.869521827343851e-01, .cy = 1.207519461400807e-02,
-            // .cx = 2.8695218267617745e-01, .cy = 1.207519461400807e-02,
-            // .cx = 2.86952182676179e-01, .cy = 1.2075194614007514e-02,
-            // .cx = 2.86952182676179e-01, .cy = 1.20751946140075e-02,
-            // .cx = try parseHexFloat(F, "0x1.25d6cb0070a58fb5cbb8a349469ep-2"),
-            // .cy = try parseHexFloat(F, "0x1.8bae12fae1332fedf28b4701e9a0p-7"),
-            // .cx = try parseHexFloat(F, "0x1.8p-0"),
-            // .cy = try parseHexFloat(F, "0x1.aaae12fae1p-0"),
-            // .zoom = 106, .magShift = 2,
-            // .cx = "0x1.25d6cb0070370fb5cbb8a349469ep-2",
-            // .cy = "0x1.8bae12fafb2b2fedf28b4701e9a0p-7",
-            .cx = try alloc.dupe(u8, ".0000000000000000"),
-            .cy = try alloc.dupe(u8, ".0000000000000000"),
-            .zoom = 0,
-            .magShift = 2,
-            .words = 1,
-            .iters = 300,
-            // .iters = 400,
-        };
+        var params = try Params.init(alloc);
 
         var saveName = try alloc.dupe(u8, "save.json");
+        var dataName = try alloc.dupe(u8, "data/zoom10_000.dat");
         {
             var argIter = std.process.args();
             _ = argIter.next();
             if (argIter.next()) |arg| { saveName = try alloc.dupe(u8, arg); std.debug.print("save name = {s}\n", .{saveName}); }
+            if (argIter.next()) |arg| { dataName = try alloc.dupe(u8, arg); std.debug.print("data name = {s}\n", .{dataName}); }
         }
 
         var storage = try mandel.MandelStorage.init(alloc);
@@ -89,6 +64,7 @@ pub const Viewer = struct {
             .params = params,
             .exit = false,
             .saveFile = saveName,
+            .dataFile = dataName,
             .storage = storage
         };
     }
@@ -274,6 +250,15 @@ pub const Viewer = struct {
                     },
                     sdl2.SDLK_F9 => {
                         if (ps.readConfig(self.alloc, self.saveFile)) {} else |err| {
+                            std.debug.print("Failed to load: {}\n", .{err});
+                            cont = false;
+                        }
+                    },
+                    sdl2.SDLK_F8 => {
+                        var file = try files.RenderedFile.init(&self.params, &self.storage);
+                        if (file.load(self.dataFile)) {
+                            cont = true;
+                        } else |err| {
                             std.debug.print("Failed to load: {}\n", .{err});
                             cont = false;
                         }
