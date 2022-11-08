@@ -102,7 +102,8 @@ pub const Viewer = struct {
         }
     }
 
-    pub fn deinit(self: Self) void {
+    pub fn deinit(self: *Self) void {
+        self.storage.deinit();
         sdl2.SDL_DestroyRenderer(self.renderer);
         sdl2.SDL_DestroyWindow(self.window);
     }
@@ -118,11 +119,11 @@ pub const Viewer = struct {
             while (ox < block.sz) : (ox += rectSize) {
                 const px = bpx + ox;
 
-                const iterIndex = oy * block.sz + ox;
-                const current = block.iters[iterIndex];
+                const current = block.iter(ox, oy);
 
                 var g: u8 = @intCast(u8, if (current < 0 or current > self.params.iters) 0 else current & 0xff);
-                const a = @intCast(u8, if (current < 0) 0x0 else if (current > self.params.iters) 0xff else @intCast(u32, (@intCast(u32, current) * 255 / self.params.iters)) & 0xff);
+                // const a = @intCast(u8, if (current <= 0) 0x0 else if (current > self.params.iters) 0xff else @intCast(u32, (@intCast(u32, current) * 255 / self.params.iters)) & 0xff);
+                const a : u8 = 0xff;
                 g = (g << 7) | (g >> 1);
                 _ = sdl2.SDL_SetRenderDrawColor(self.renderer, g, g, g, a);
 
@@ -138,15 +139,13 @@ pub const Viewer = struct {
     fn renderForParams(self: *Self, comptime BigIntType: type) !void {
         std.debug.print("Rendering with BigInt({s}) at x= {s}, y= {s}, zoom= {}, iters= {}...\n", .{ @typeName(BigIntType), self.params.cx, self.params.cy, self.params.zoom, self.params.iters });
 
-        _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 255);
+        _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 0);
         _ = sdl2.SDL_RenderClear(self.renderer);
 
         var timer = try std.time.Timer.start();
         const timeStart = timer.lap();
 
-        var layer = try self.storage.ensure(self.params.zoom, self.params.blockSize);
-
-        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, layer);
+        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage);
         defer workLoad.deinit(self.alloc);
 
         std.debug.print("time for making blocks = {}\n", .{timer.lap() - timeStart});

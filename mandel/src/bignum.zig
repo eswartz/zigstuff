@@ -171,22 +171,37 @@ pub fn printBigArray(alloc: Allocator, words: []const u64) ![]u8 {
     const wordCount = words.len;
 
     var vidx: u32 = 0;
-    while (vidx < wordCount) {
+    while (vidx < wordCount) : (vidx += 1) {
         try std.fmt.format(list.writer(), ".{x:0>16}", .{words[wordCount - vidx - 1]});
-        vidx += 1;
     }
     return list.toOwnedSlice();
 }
 
-/// Returns slice, not copied
-pub fn intWords(comptime IntType: type, x: IntType) []const u64 {
+/// Returns slice, not copied (hence inlined)
+pub inline fn intWords(comptime IntType: type, x: IntType) []const u64 {
     const wordCount = @typeInfo(IntType).Int.bits >> 6;
-    var words = @ptrCast([*]const u64, &x)[0..wordCount];
+    const words = @ptrCast([*]const u64, &x)[0..wordCount];
     return words;
 }
 
+fn intsAdd(comptime IntType: type, a: []const u64, b: []const u64, s: []u64) void {
+    var ai = @ptrCast(*const IntType, a.ptr);
+    var bi = @ptrCast(*const IntType, b.ptr);
+    @ptrCast(*IntType, s.ptr).* = ai.* + bi.*;
+}
+
+pub fn intWordsAdd(alloc: Allocator, x: []const u64, y: []const u64) ![]u64 {
+    var s = try alloc.alloc(u64, x.len);
+    switch(x.len) {
+        inline 1...16 => |v| intsAdd(BigInt(v * 64), x, y, s),
+        else => unreachable,
+    }
+    return s;
+}
+
+
 pub fn printBig(alloc: Allocator, comptime IntType: type, x: IntType) ![]u8 {
-    return printBigArray(alloc, intWords(IntType, x));
+    return try printBigArray(alloc, intWords(IntType, x));
 }
 
 pub fn BigFixedFloat(comptime BigFloatType: type, comptime intBits: u16) type {
@@ -274,10 +289,8 @@ fn testBigEqu(comptime T: type, x: T, y: T) !void {
     const print = @import("std").debug.print;
 
     const alloc = std.testing.allocator;
-    var s1 = try printBig(alloc, T, x);
-    defer alloc.free(s1);
-    var s2 = try printBig(alloc, T, y);
-    defer alloc.free(s2);
+    var s1 = try printBig(alloc, T, x); defer alloc.free(s1);
+    var s2 = try printBig(alloc, T, y); defer alloc.free(s2);
 
     if (x == y) return;
 
@@ -327,12 +340,12 @@ test "mb256_0" {
     {
         const x0 = m.fromFloat(-1.5);
         const y0 = m.fromFloat(1.5);
-        try testing.expectEqual(@as(i32, 1), m.calc(x0, y0, 100));
+        try testing.expectEqual(@as(i32, 1), m.calcMandelbrot(x0, y0, 100));
     }
     {
         const x0 = m.fromFloat(-1.25);
         const y0 = m.fromFloat(0.2);
-        try testing.expectEqual(@as(i32, 11), m.calc(x0, y0, 100));
+        try testing.expectEqual(@as(i32, 11), m.calcMandelbrot(x0, y0, 100));
     }
 
     const cx = -1.25;
@@ -351,7 +364,7 @@ test "mb256_0" {
         while (px < XS) : (px += 1) {
             const fx = m.fromFloat(cx + @intToFloat(NativeFloat, px) * xrange);
             const fy = m.fromFloat(cy + @intToFloat(NativeFloat, py) * yrange);
-            const iters = m.calc(fx, fy, 256);
+            const iters = m.calcMandelbrot(fx, fy, 256);
             itersTot += if (iters > 0) iters else -iters;
             std.debug.print("{c}", .{if (iters >= 0) "-ABCDEFGHIJKLMNOPQRSTUVWXYZ"[@intCast(u32, iters) % 26] else ' '});
         }
