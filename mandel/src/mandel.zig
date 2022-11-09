@@ -441,7 +441,7 @@ pub const MandelLayer = struct {
         }
         {
             var cs = try coord.to_string(self.alloc); defer self.alloc.free(cs);
-            std.debug.print("coord={s}\n", .{cs});
+            // std.debug.print("coord={s}\n", .{cs});
             var res = try self.blocks.getOrPut(coord);
             var blockPtr = res.value_ptr;
             if (!res.found_existing) {

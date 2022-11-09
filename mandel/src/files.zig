@@ -380,7 +380,7 @@ pub const RenderedFile = struct {
             if (res == zlib.Z_STREAM_END or zstr.avail_out == 0) break;
             if (res == zlib.Z_DATA_ERROR) {
                 std.debug.print("zlib error: {s}\n", .{zstr.msg});
-                return error.FileFormat;
+                return; // error.FileFormat;
             }
 
             i8ptr = zstr.total_out;
@@ -470,6 +470,12 @@ pub const RenderedFile = struct {
         try self.compress_iters(iters, writer);
     }
 
+    fn write_string(self: Self, writer : File.Writer, str: []const u8) !void {
+        _=self;
+        try writer.writeIntBig(u16, @intCast(u16, str.len));
+        try writer.writeAll(str);
+    }
+
     fn compress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []i32) !void {
         _ = psy;
         var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage, self.params.sx, 0, 0);
@@ -497,7 +503,7 @@ pub const RenderedFile = struct {
     }
 
     fn compress_iters(self: Self, iters: []i32, writer: File.Writer) !void {
-        var obuf = try self.arena.alloc(u8, 262144);
+        var obuf = try self.arena.alloc(u8, 4096);
 
         var zstr : zlib.z_stream = undefined;
         std.mem.set(u8, @ptrCast([*]u8, &zstr)[0..@sizeOf(zlib.z_stream)], 0);
@@ -517,31 +523,32 @@ pub const RenderedFile = struct {
             return error.ZLibError;
         }
 
-        while (zstr.avail_in != 0) {
+        zstr.next_in = @ptrCast([*] u8, iters);
+        zstr.avail_in = @intCast(c_uint, i8len);
+
+        while (true) {
             zstr.avail_out = @intCast(c_uint, obuf.len);
             zstr.next_out = obuf.ptr;
 
-            const res = zlib.deflate(&zstr, if (zstr.avail_in == 0) zlib.Z_FINISH else zlib.Z_NO_FLUSH);
-            if (res == zlib.Z_STREAM_END) break;
-            if (res == zlib.Z_DATA_ERROR) {
-                std.debug.print("zlib error: {s}\n", .{zstr.msg});
-                return error.FileFormat;
+            // const res = zlib.deflate(&zstr, if (zstr.avail_in == 0) zlib.Z_FINISH else zlib.Z_NO_FLUSH);
+            const res = zlib.deflate(&zstr, zlib.Z_FINISH);
+            if (res != zlib.Z_STREAM_END and res != zlib.Z_OK) {
+                if (zstr.msg != null)
+                    std.debug.print("zlib error: {s}\n", .{zstr.msg})
+                else
+                    std.debug.print("zlib error: {}\n", .{res});
+                return error.CompressError;
             }
 
             const olen = obuf.len - zstr.avail_out;
-            // std.debug.print("olen={}\n", .{olen});
-            _ = try writer.write(obuf[0..olen]);
+            std.debug.print("olen={}\n", .{olen});
+            _ = try writer.writeAll(obuf[0..olen]);
+
+            if (zstr.avail_out != 0) break;
         }
 
         _ = zlib.deflateEnd(&zstr);
     }
-
-    fn write_string(self: Self, writer : File.Writer, str: []const u8) !void {
-        _=self;
-        try writer.writeIntBig(u16, @intCast(u16, str.len));
-        try writer.writeAll(str);
-    }
-
 };
 
 /////////////////

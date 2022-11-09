@@ -37,14 +37,46 @@ pub const Viewer = struct {
         var frameSize : u32 = 1024;
         var blockSize : u16 = 128;
 
-        var saveName = try alloc.dupe(u8, "save.json");
-        var dataName = try alloc.dupe(u8, "data/zoom10_000.dat");
+        var saveName : []u8 = "";
+        var dataName : []u8 = "";
         {
             var argIter = std.process.args();
-            _ = argIter.next();
-            if (argIter.next()) |arg| { saveName = try alloc.dupe(u8, arg); std.debug.print("save name = {s}\n", .{saveName}); }
-            if (argIter.next()) |arg| { dataName = try alloc.dupe(u8, arg); std.debug.print("data name = {s}\n", .{dataName}); }
+            _ = argIter.next(); // name
+            while (argIter.next()) |arg| {
+                if (std.mem.eql(u8, arg, "-h")) {
+                    std.debug.print(
+                        \\ help: [options] .json .dat
+                        \\
+                        \\ -s pot: render size
+                        \\ -r pot: window size
+                        \\
+                        , .{});
+                    std.process.exit(0);
+                } if (std.mem.eql(u8, arg, "-s")) {
+                    frameSize = try std.fmt.parseInt(u32, argIter.next().?, 10);
+                    if (!std.math.isPowerOfTwo(frameSize)) {
+                        return error.SizeMustBePowerOfTwo;
+                    }
+                } else if (std.mem.eql(u8, arg, "-r")) {
+                    winSize = try std.fmt.parseInt(c_int, argIter.next().?, 10);
+                    if (!std.math.isPowerOfTwo(winSize)) {
+                        return error.WindowMustBePowerOfTwo;
+                    }
+                } else if (arg[0] != '-') {
+                    if (saveName.len == 0)
+                        saveName = try alloc.dupe(u8, arg)
+                    else if (dataName.len == 0)
+                        dataName = try alloc.dupe(u8, arg)
+                    else
+                        return error.UnexpectedArgument;
+                }
+            }
         }
+
+        if (winSize > frameSize) frameSize = @intCast(u32, winSize);
+
+        if (saveName.len == 0) saveName = try alloc.dupe(u8, "save.json");
+        if (dataName.len == 0) dataName = try alloc.dupe(u8, "data/zoom10_000.dat");
 
         var storage = try mandel.MandelStorage.init(alloc, blockSize);
 
