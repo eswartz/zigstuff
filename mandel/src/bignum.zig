@@ -2,7 +2,9 @@ const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
-pub const MAXWORDS = 16;
+const config = @import("config.zig");
+
+pub const MAXWORDS = config.MAXWORDS;
 
 pub fn BigInt(comptime size: u16) type {
     return @Type(.{ .Int = .{ .signedness = .signed, .bits = size } });

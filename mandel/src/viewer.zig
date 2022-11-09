@@ -3,6 +3,8 @@ const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const json = std.json;
 
+const config = @import("config.zig");
+
 const bignum = @import("bignum.zig");
 const Mandel = bignum.Mandel;
 
@@ -139,12 +141,13 @@ pub const Viewer = struct {
                 for (blocks) |block| {
                     try block.calculate(stop);
 
-                    readyMutex.*.lock();
-                    try readyBlocks.*.append(block);
-                    if (!stop.*.load(.Unordered)) {
-                        _ = blocksLeft.*.fetchSub(1, .Acquire);
+                    readyMutex.lock();
+                    defer readyMutex.unlock();
+
+                    try readyBlocks.append(block);
+                    if (!stop.load(.SeqCst)) {
+                        _ = blocksLeft.fetchSub(1, .Acquire);
                     }
-                    readyMutex.*.unlock();
                 }
             }
         };
@@ -153,10 +156,10 @@ pub const Viewer = struct {
         var stop = std.atomic.Atomic(bool).init(false);
         var readyBlocks = std.ArrayList(BlockType).init(self.alloc);
         defer readyBlocks.deinit();
-        var readyMutex: std.Thread.Mutex = undefined;
+        var readyMutex: std.Thread.Mutex = .{};
         var blocksLeft = std.atomic.Atomic(usize).init(workLoad.blocks.len);
 
-        const NTHREADS: usize = std.math.min(256, try std.Thread.getCpuCount());
+        const NTHREADS: usize = std.math.min(config.MAXTHREADS, try std.Thread.getCpuCount());
         var threads: [256]std.Thread = undefined;
 
         const PERTHREAD = @divExact(workLoad.blocks.len, NTHREADS);
@@ -181,22 +184,24 @@ pub const Viewer = struct {
                 break;
             }
 
-            readyMutex.lock();
             var block: ?BlockType = null;
             var any = false;
-            while (true) {
-                block = readyBlocks.popOrNull();
-                if (block == null) {
-                    if (blocksLeft.load(.Acquire) == 0) {
-                        done = true;
-                        std.debug.print("time for calculation   = {d}s\n", .{@intToFloat(f64, (timer.lap() - timeStart)) / 1.0e9});
+            {
+                readyMutex.lock();
+                defer readyMutex.unlock();
+                while (true) {
+                    block = readyBlocks.popOrNull();
+                    if (block == null) {
+                        if (blocksLeft.load(.Acquire) == 0) {
+                            done = true;
+                            std.debug.print("time for calculation   = {d}s\n", .{@intToFloat(f64, (timer.lap() - timeStart)) / 1.0e9});
+                        }
+                        break;
                     }
-                    break;
+                    self.renderBlock(block.?.px, block.?.py, block.?.data);
+                    any = true;
                 }
-                self.renderBlock(block.?.px, block.?.py, block.?.data);
-                any = true;
             }
-            readyMutex.unlock();
 
             if (any) {
                 _ = sdl2.SDL_RenderPresent(self.renderer);

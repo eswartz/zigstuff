@@ -3,6 +3,9 @@ const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const json = std.json;
 
+const config = @import("config.zig");
+const BigIntMax = config.BigIntMax;
+
 const bignum = @import("bignum.zig");
 const Mandel = bignum.Mandel;
 
@@ -45,7 +48,7 @@ pub const Params = struct {
         return std.math.scalbn(@floatCast(bignum.NativeFloat, 4.0), -@intCast(i16, self.zoom));
     }
 
-    pub fn pixelSpan(self: Params) i1024 {
+    pub fn pixelSpan(self: Params) BigIntMax {
         const ps = self.blockSize;
         const SEGS: u32 = @divExact(std.math.min(self.sx, self.sy), ps);
         var i : i1032 = 1;
@@ -55,7 +58,7 @@ pub const Params = struct {
         // const floatStep = BigFloatType.fromFloat(params.span() / @intToFloat(bignum.NativeFloat, ps * SEGS));
 
 
-        return @intCast(i1024, i);
+        return @intCast(BigIntMax, i);
     }
 
     /// Get number of words needed
@@ -322,26 +325,27 @@ pub const Params = struct {
 pub const BigCoord = struct {
     const Self = @This();
 
-    const MaxInt = i1024;
+    x: BigIntMax,
+    y: BigIntMax,
 
-    x: MaxInt,
-    y: MaxInt,
-
-    pub fn init(xi : MaxInt, yi: MaxInt) Self {
+    pub fn init(xi : BigIntMax, yi: BigIntMax) Self {
         return .{ .x = xi, .y = yi };
     }
 
     pub fn hash(self: Self) u64 {
-        const h = self.x ^ self.y ^ (self.x >> 64) ^ (self.y >> 64);
-        return @intCast(u64, h & 0xffffffff_ffffffff);
+        var hasher = std.hash.Wyhash.init(0);
+        std.hash.autoHashStrat(&hasher, self.x, .Deep);
+        std.hash.autoHashStrat(&hasher, self.y, .Deep);
+        const h = hasher.final();
+        return h;
     }
     pub fn eql(self: BigCoord, other: BigCoord) bool {
         return self.x == other.x and self.y == other.y;
     }
 
     pub fn to_string(self: BigCoord, alloc: Allocator) ![]u8 {
-        var xs = try bignum.printBig(alloc, MaxInt, self.x); defer alloc.free(xs);
-        var ys = try bignum.printBig(alloc, MaxInt, self.y); defer alloc.free(ys);
+        var xs = try bignum.printBig(alloc, BigIntMax, self.x); defer alloc.free(xs);
+        var ys = try bignum.printBig(alloc, BigIntMax, self.y); defer alloc.free(ys);
         return try std.fmt.allocPrint(alloc, "[{s}, {s}]", .{ xs, ys });
     }
 };
