@@ -62,6 +62,11 @@ pub const Viewer = struct {
                     if (!std.math.isPowerOfTwo(winSize)) {
                         return error.WindowMustBePowerOfTwo;
                     }
+                } else if (std.mem.eql(u8, arg, "-b")) {
+                    blockSize = try std.fmt.parseInt(u16, argIter.next().?, 10);
+                    if (!std.math.isPowerOfTwo(blockSize)) {
+                        return error.BlockSizeMustBePowerOfTwo;
+                    }
                 } else if (arg[0] != '-') {
                     if (saveName.len == 0)
                         saveName = try alloc.dupe(u8, arg)
@@ -205,38 +210,43 @@ pub const Viewer = struct {
         const BlockType = @TypeOf(workLoad.blocks[0]);
 
         const ThreadInfo = struct {
-            fn calcThread(stop: *std.atomic.Atomic(bool), readyBlocks: *std.ArrayList(BlockType), readyMutex: *std.Thread.Mutex, blocksLeft: *std.atomic.Atomic(usize), blocks: []BlockType) !void {
-                for (blocks) |block| {
+            fn calcThread(stop: *std.atomic.Atomic(bool), readyBlocks: *std.ArrayList(*BlockType), readyMutex: *std.Thread.Mutex,
+                    blockIndex: *std.atomic.Atomic(usize), blocks: []BlockType,
+                    blocksLeft: *std.atomic.Atomic(usize)) !void {
+                while (!stop.load(.Unordered)) {
+                    var myIndex = blockIndex.fetchAdd(1, .SeqCst);
+                    if (myIndex >= blocks.len) break;
+
+                    var block = &blocks[myIndex];
+
                     try block.calculate(stop);
 
                     readyMutex.lock();
                     defer readyMutex.unlock();
-
                     try readyBlocks.append(block);
-                    if (!stop.load(.Unordered)) {
-                        _ = blocksLeft.fetchSub(1, .Acquire);
-                    }
+
+                    _ = blocksLeft.fetchSub(1, .SeqCst);
                 }
             }
         };
 
         // make worker threads
         var stop = std.atomic.Atomic(bool).init(false);
-        var readyBlocks = std.ArrayList(BlockType).init(self.alloc);
+        var readyBlocks = std.ArrayList(*BlockType).init(self.alloc);
         defer readyBlocks.deinit();
         var readyMutex: std.Thread.Mutex = .{};
+        var blockIndex = std.atomic.Atomic(usize).init(0);
         var blocksLeft = std.atomic.Atomic(usize).init(workLoad.blocks.len);
 
         const NTHREADS: usize = std.math.min(workLoad.blocks.len, std.math.min(config.MAXTHREADS, try std.Thread.getCpuCount()));
         var threads: [256]std.Thread = undefined;
 
-        const PERTHREAD = @divExact(workLoad.blocks.len, NTHREADS);
-
         var nt: u32 = 0;
         while (nt < NTHREADS) : (nt += 1) {
-            const start = nt * PERTHREAD;
-            const slice = workLoad.blocks[start..start+PERTHREAD];
-            threads[nt] = try std.Thread.spawn(.{}, ThreadInfo.calcThread, .{ &stop, &readyBlocks, &readyMutex, &blocksLeft, slice });
+            threads[nt] = try std.Thread.spawn(.{}, ThreadInfo.calcThread, .{
+                &stop, &readyBlocks, &readyMutex,
+                &blockIndex, workLoad.blocks, &blocksLeft
+            });
         }
 
         std.debug.print("time for thread launch = {}\n", .{timer.lap() - timeStart});
@@ -252,7 +262,7 @@ pub const Viewer = struct {
                 break;
             }
 
-            var block: ?BlockType = null;
+            var block: ?*BlockType = null;
             var any = false;
             {
                 readyMutex.lock();
@@ -313,6 +323,7 @@ pub const Viewer = struct {
                 var ke = @ptrCast(*sdl2.SDL_KeyboardEvent, &event);
                 cont = true;
 
+                var shift = (ke.state & sdl2.KMOD_SHIFT) != 0;
                 var minShift : u5 = std.math.min(1, @intCast(u5, std.math.log2_int(u32, @intCast(u32, std.math.min(wx, wy)) / blockSize)));
                 const shiftAmt: u5 = if ((ke.keysym.mod & sdl2.KMOD_LSHIFT) != 0) (minShift + 3) else minShift;
                 std.debug.print("Min shift= {}, shift = {}, span = {}\n", .{ minShift, shiftAmt, @floatCast(f64, span) });
@@ -324,8 +335,8 @@ pub const Viewer = struct {
                     sdl2.SDLK_DOWN => try bignum.faddShift(self.alloc, &ps.cy, words, span, shiftAmt),
                     sdl2.SDLK_LEFT => try bignum.faddShift(self.alloc, &ps.cx, words, -span, shiftAmt),
                     sdl2.SDLK_RIGHT => try bignum.faddShift(self.alloc, &ps.cx, words, span, shiftAmt),
-                    sdl2.SDLK_PAGEDOWN => ps.iters = @intCast(u32, std.math.max(0, @intCast(i32, ps.iters) - 50)),
-                    sdl2.SDLK_PAGEUP => ps.iters += 50,
+                    sdl2.SDLK_PAGEDOWN => ps.iters = @intCast(u32, std.math.max(0, @intCast(i32, ps.iters) - if (shift) @intCast(i32, 250) else @intCast(i32, 50))),
+                    sdl2.SDLK_PAGEUP => ps.iters += if (shift) @intCast(u32, 250) else @intCast(u32, 50),
                     sdl2.SDLK_LEFTBRACKET => ps.words = if (words > 1) words - 1 else 1,
                     sdl2.SDLK_RIGHTBRACKET => ps.words += 1,
                     sdl2.SDLK_SPACE => {
@@ -367,7 +378,8 @@ pub const Viewer = struct {
                 };
             } else if (event.type == sdl2.SDL_MOUSEBUTTONDOWN) {
                 var me = @ptrCast(*sdl2.SDL_MouseButtonEvent, &event);
-                if (me.button == 1 and (sdl2.SDL_GetModState() & sdl2.KMOD_SHIFT) != 0) {
+                const shift = (sdl2.SDL_GetModState() & sdl2.KMOD_SHIFT) != 0;
+                if (me.button == 1 and shift) {
                     cont = true;
                     // recenter on mouse position
                     try bignum.fadj(self.alloc, &ps.cy, words, span, (me.y + (blockSize >> 1)) & ~(blockSize - 1), @intCast(i32, ps.sy));

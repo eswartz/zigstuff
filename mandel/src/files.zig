@@ -541,7 +541,7 @@ pub const RenderedFile = struct {
             }
 
             const olen = obuf.len - zstr.avail_out;
-            std.debug.print("olen={}\n", .{olen});
+            // std.debug.print("olen={}\n", .{olen});
             _ = try writer.writeAll(obuf[0..olen]);
 
             if (zstr.avail_out != 0) break;
