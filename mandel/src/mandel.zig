@@ -245,7 +245,7 @@ pub const Params = struct {
                     // const coord = try BigCoord.init(T, alloc, fxs.items[px0], fys.items[py0]);
                     const coord = BigCoord.init(fxs.items[px0], fys.items[py0]);
                     const blockData = try layer.ensure(coord);
-                    std.debug.print("{},{} blockData = {*}\n", .{ px0, py0, blockData });
+                    // std.debug.print("{},{} blockData = {*}\n", .{ px0, py0, blockData });
                     const blockDataM1 = if (layerM1 != null) layerM1.?.get(coord) else null;
 
                     try blocks.append(.{
