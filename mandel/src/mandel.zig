@@ -51,15 +51,6 @@ pub const Params = struct {
         return @divExact(calcSize, blockSize);
     }
 
-    // pub fn pixelSpan(self: Params, calcSize: u32, blockSize: u16) BigIntMax {
-    //     var i : BigIntMax = 1;
-    //     i <<= @intCast(u11, (self.words << 6) + 2);
-    //     i >>= @intCast(u11, self.zoom);
-    //     i >>= std.math.log2_int(u32, self.segments(calcSize, blockSize));
-
-    //     return @intCast(BigIntMax, i);
-    // }
-
     /// Get number of words needed
     pub fn getDefaultIntSize(self: Params) u16 {
         const zoom = self.zoom;
@@ -119,6 +110,11 @@ pub const Params = struct {
             data: *BlockData,
             // if set, data from level zoom-1
             datam1: ?*const BlockData,
+            // if set, data from level zoom+1
+            datap1_00: ?*const BlockData,
+            datap1_01: ?*const BlockData,
+            datap1_10: ?*const BlockData,
+            datap1_11: ?*const BlockData,
 
             // coord of box in viewport
             px: u32,
@@ -140,6 +136,8 @@ pub const Params = struct {
                 var all : u32 = 0;
                 var recalc : u32 = 0;
                 var oy: u32 = 0;
+                const halfBlockSize = blockSize >> 1;
+
                 while (!stop.*.load(.Unordered) and oy < blockSize) : (oy += rectSize) {
                     const py = self.py + oy;
                     const fy = self.fys[py];
@@ -148,9 +146,21 @@ pub const Params = struct {
                         const px = self.px + ox;
 
                         var iters = data.iter(ox, oy);
-                        if (iters == 0 and self.datam1 != null and (ox & 1) == 0 and (oy & 1) == 0) {
-                            // reuse data from outer zoom
-                            iters = self.datam1.?.iter(ox / 2, oy / 2);
+                        if (iters == 0) {
+                            if (self.datam1 != null and (ox & 1) == 0 and (oy & 1) == 0) {
+                                // reuse data from outer zoom
+                                iters = self.datam1.?.iter(ox / 2, oy / 2);
+                            }
+                            if (iters == 0) {
+                                // reuse data from inner zoom?
+                                var inner : ?*const BlockData =
+                                    if (ox < halfBlockSize)
+                                        if (oy < halfBlockSize) self.datap1_00 else self.datap1_01
+                                        else if (oy < halfBlockSize) self.datap1_10 else self.datap1_11;
+                                if (inner != null) {
+                                    iters = inner.?.iter(((ox << 1) & (blockSize - 1)), ((oy << 1) & (blockSize - 1)));
+                                }
+                            }
                             data.setIter(ox, oy, iters);
                         }
                         if (iters == 0 or (iters < 0 and -iters < self.maxIters)) {
@@ -193,14 +203,18 @@ pub const Params = struct {
 
                 // split drawscape into segments
                 const blockSize = storage.blockSize;
+                const halfBlockSize = blockSize >> 1;
                 const SEGS = params.segments(calcSize, blockSize);
                 const div = @intToFloat(bignum.NativeFloat, blockSize * SEGS);
                 var step = pspan / div;
                 std.debug.print("segs = {}, span = {}, div = {}, step = {}\n", .{ SEGS, pspan, div, step });
+                // per-pixel step
                 const floatStep = BigFloatType.fromFloat(step);
+                // const halfBlockStep = BigFloatType.fromFloat(pspan) >> 1;
 
                 var layer = try storage.ensure(params.zoom, blockSize);
                 var layerM1 = if (params.zoom > 0) storage.get(params.zoom - 1) else null;
+                var layerP1 = storage.get(params.zoom + 1);
 
                 var fss = try bignum.printBig(alloc, T, floatStep); defer alloc.free(fss);
                 std.debug.print("fss = {s}\n", .{ fss });
@@ -241,6 +255,10 @@ pub const Params = struct {
                     const blockData = try layer.ensure(coord);
                     // std.debug.print("{},{} blockData = {*}\n", .{ px0, py0, blockData });
                     const blockDataM1 = if (layerM1 != null) layerM1.?.get(coord) else null;
+                    const blockDataP1_00 = if (layerP1 != null) layerP1.?.get(coord) else null;
+                    const blockDataP1_10 = if (layerP1 != null) layerP1.?.get(BigCoord.initFrom(T, fxs.items[px0 + halfBlockSize], fys.items[py0])) else null;
+                    const blockDataP1_01 = if (layerP1 != null) layerP1.?.get(BigCoord.initFrom(T, fxs.items[px0], fys.items[py0 + halfBlockSize])) else null;
+                    const blockDataP1_11 = if (layerP1 != null) layerP1.?.get(BigCoord.initFrom(T, fxs.items[px0 + halfBlockSize], fys.items[py0 + halfBlockSize])) else null;
 
                     try blocks.append(.{
                         .px = px0,
@@ -250,7 +268,11 @@ pub const Params = struct {
                         .fxs = fxs.items,
                         .fys = fys.items,
                         .data = blockData,
-                        .datam1 = blockDataM1
+                        .datam1 = blockDataM1,
+                        .datap1_00 = blockDataP1_00,
+                        .datap1_01 = blockDataP1_01,
+                        .datap1_10 = blockDataP1_10,
+                        .datap1_11 = blockDataP1_11,
                     });
                 }
 

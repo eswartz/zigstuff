@@ -169,6 +169,24 @@ pub const Viewer = struct {
         }
     }
 
+    fn clearParamsT(self: *Self, calcSize : u32, comptime BigIntType : type) !void {
+        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage,
+            calcSize, 0, 0,
+        );
+        defer workLoad.deinit(self.alloc);
+
+        for (workLoad.blocks) |block| {
+            std.mem.set(i32, block.data.iters, 0);
+        }
+    }
+
+    fn clearParams(self: *Self, calcSize : u32) !void {
+        try switch (self.params.words) {
+            inline 1...bignum.MAXWORDS => |v| self.clearParamsT(calcSize, bignum.BigInt(64 * v)),
+            else => self.clearParamsT(calcSize, bignum.BigInt(64 * bignum.MAXWORDS)),
+        };
+    }
+
     fn renderForParams(self: *Self, comptime BigIntType: type) !void {
         std.debug.print("Rendering with BigInt({s}) at x= {s}, y= {s}, zoom= {}, iters= {}...\n", .{ @typeName(BigIntType), self.params.cx, self.params.cy, self.params.zoom, self.params.iters });
 
@@ -184,12 +202,7 @@ pub const Viewer = struct {
         const calcSize = @intCast(u32, std.math.max(wx, wy));
 
         var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage,
-                calcSize,
-                // @divExact(@intCast(i32, calcSize) - @intCast(i32, self.params.sx), 2),
-                // @divExact(@intCast(i32, calcSize) - @intCast(i32, self.params.sy), 2),
-                // (@intCast(i32, calcSize) - @intCast(i32, self.params.sx)),
-                // (@intCast(i32, calcSize) - @intCast(i32, self.params.sy)),
-                0, 0,
+                calcSize, 0, 0,
         );
         defer workLoad.deinit(self.alloc);
 
@@ -343,6 +356,7 @@ pub const Viewer = struct {
                         try bignum.falign(self.alloc, &ps.cx, words);
                         try bignum.falign(self.alloc, &ps.cy, words);
                     },
+                    sdl2.SDLK_r => try self.clearParams(calcSize),
                     sdl2.SDLK_F5 => {
                         try ps.writeConfig(self.alloc, self.saveFile);
                         cont = false;
