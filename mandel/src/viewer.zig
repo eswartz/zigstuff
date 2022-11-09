@@ -33,20 +33,6 @@ pub const Viewer = struct {
     storage : mandel.MandelStorage,
 
     pub fn init(alloc: Allocator) !Self {
-        sdl2.SDL_SetMainReady();
-
-        if (sdl2.SDL_Init(sdl2.SDL_INIT_VIDEO) != 0) return error.SDLError;
-        errdefer sdl2.SDL_Quit();
-        if (sdl2.SDL_VideoInit(0) != 0) return error.SDLError;
-
-        var window = sdl2.SDL_CreateWindow("Mandelbrot!", sdl2.SDL_WINDOWPOS_UNDEFINED, sdl2.SDL_WINDOWPOS_UNDEFINED, 1024, 1024, sdl2.SDL_WINDOW_RESIZABLE | sdl2.SDL_WINDOW_ALLOW_HIGHDPI);
-        if (window == null) return error.SDLError;
-
-        var renderer = sdl2.SDL_CreateRenderer(window, -1, 0);
-        if (renderer == null) return error.SDLError;
-
-        _ = sdl2.SDL_SetRenderDrawBlendMode(renderer, sdl2.SDL_BLENDMODE_BLEND);
-
         var params = try Params.init(alloc);
 
         var saveName = try alloc.dupe(u8, "save.json");
@@ -59,6 +45,22 @@ pub const Viewer = struct {
         }
 
         var storage = try mandel.MandelStorage.init(alloc, 128);
+
+        sdl2.SDL_SetMainReady();
+
+        if (sdl2.SDL_Init(sdl2.SDL_INIT_VIDEO) != 0) return error.SDLError;
+        errdefer sdl2.SDL_Quit();
+        if (sdl2.SDL_VideoInit(0) != 0) return error.SDLError;
+
+        var window = sdl2.SDL_CreateWindow("Mandelbrot!", sdl2.SDL_WINDOWPOS_UNDEFINED, sdl2.SDL_WINDOWPOS_UNDEFINED,
+            @intCast(i32, params.sx), @intCast(i32, params.sy),
+            sdl2.SDL_WINDOW_RESIZABLE | sdl2.SDL_WINDOW_ALLOW_HIGHDPI);
+        if (window == null) return error.SDLError;
+
+        var renderer = sdl2.SDL_CreateRenderer(window, -1, 0);
+        if (renderer == null) return error.SDLError;
+
+        _ = sdl2.SDL_SetRenderDrawBlendMode(renderer, sdl2.SDL_BLENDMODE_BLEND);
 
         return Viewer{
             .alloc = alloc,
@@ -75,17 +77,17 @@ pub const Viewer = struct {
 
     pub fn run(self: *Self) !void {
         while (!self.exit) {
-            if (self.pause) {
-                while (self.pause and !self.exit) {
-                    _ = try self.handleInput();
-                }
-                continue;
-            }
-
             try switch (self.params.words) {
                 inline 1...bignum.MAXWORDS => |v| self.renderForParams(bignum.BigInt(64 * v)),
                 else => self.renderForParams(bignum.BigInt(64 * bignum.MAXWORDS)),
             };
+
+            if (self.pause) {
+                while (!self.exit) {
+                    if (try self.handleInput())
+                        break;
+                }
+            }
         }
     }
 
@@ -141,7 +143,13 @@ pub const Viewer = struct {
             self.renderBlock(block.px, block.py, block.data);
         }
 
+        _ = sdl2.SDL_RenderPresent(self.renderer);
+
         std.debug.print("time for first block draw = {}\n", .{timer.lap() - timeStart});
+
+        if (self.pause) {
+            return;
+        }
 
         const BlockType = @TypeOf(workLoad.blocks[0]);
 
