@@ -27,6 +27,7 @@ pub const Viewer = struct {
     renderer: *sdl2.SDL_Renderer,
     params: Params,
     exit: bool,
+    pause: bool,
     saveFile : []u8,
     dataFile : []u8,
     storage : mandel.MandelStorage,
@@ -57,7 +58,7 @@ pub const Viewer = struct {
             if (argIter.next()) |arg| { dataName = try alloc.dupe(u8, arg); std.debug.print("data name = {s}\n", .{dataName}); }
         }
 
-        var storage = try mandel.MandelStorage.init(alloc);
+        var storage = try mandel.MandelStorage.init(alloc, 128);
 
         return Viewer{
             .alloc = alloc,
@@ -65,6 +66,7 @@ pub const Viewer = struct {
             .renderer = renderer.?,
             .params = params,
             .exit = false,
+            .pause = false,
             .saveFile = saveName,
             .dataFile = dataName,
             .storage = storage
@@ -73,6 +75,13 @@ pub const Viewer = struct {
 
     pub fn run(self: *Self) !void {
         while (!self.exit) {
+            if (self.pause) {
+                while (self.pause and !self.exit) {
+                    _ = try self.handleInput();
+                }
+                continue;
+            }
+
             try switch (self.params.words) {
                 inline 1...bignum.MAXWORDS => |v| self.renderForParams(bignum.BigInt(64 * v)),
                 else => self.renderForParams(bignum.BigInt(64 * bignum.MAXWORDS)),
@@ -145,7 +154,7 @@ pub const Viewer = struct {
                     defer readyMutex.unlock();
 
                     try readyBlocks.append(block);
-                    if (!stop.load(.SeqCst)) {
+                    if (!stop.load(.Unordered)) {
                         _ = blocksLeft.fetchSub(1, .Acquire);
                     }
                 }
@@ -159,7 +168,7 @@ pub const Viewer = struct {
         var readyMutex: std.Thread.Mutex = .{};
         var blocksLeft = std.atomic.Atomic(usize).init(workLoad.blocks.len);
 
-        const NTHREADS: usize = std.math.min(config.MAXTHREADS, try std.Thread.getCpuCount());
+        const NTHREADS: usize = std.math.min(workLoad.blocks.len, std.math.min(config.MAXTHREADS, try std.Thread.getCpuCount()));
         var threads: [256]std.Thread = undefined;
 
         const PERTHREAD = @divExact(workLoad.blocks.len, NTHREADS);
@@ -220,7 +229,13 @@ pub const Viewer = struct {
         }
     }
 
+    fn setPause(self: *Self, p: bool) void {
+        std.debug.print("{s}\n", .{if (p) "PAUSE" else "RESUME"});
+        self.pause = p;
+    }
+
     fn handleInput(self: *Self) !bool {
+        const blockSize = self.storage.blockSize;
         var ps = &self.params;
         var event: sdl2.SDL_Event = undefined;
         var cont = false;
@@ -229,6 +244,8 @@ pub const Viewer = struct {
             var span = ps.span();
             if (event.type == sdl2.SDL_QUIT) {
                 self.exit = true;
+                std.debug.print("Cancelling...\n", .{});
+                cont = true;
             } else if (event.type == sdl2.SDL_KEYDOWN) {
                 var ke = @ptrCast(*sdl2.SDL_KeyboardEvent, &event);
                 cont = true;
@@ -277,6 +294,7 @@ pub const Viewer = struct {
                             cont = false;
                         }
                     },
+                    sdl2.SDLK_PAUSE => { self.setPause(!self.pause); cont = true; },
                     '0'...'9' => |v| ps.magShift = @intCast(u5, v - '0'),
                     else => cont = false,
                 };
@@ -285,8 +303,8 @@ pub const Viewer = struct {
                 if (me.button == 1) {
                     cont = true;
                     // recenter on mouse position
-                    try bignum.fadj(self.alloc, &ps.cy, words, span, (me.y + (ps.blockSize >> 1)) & ~(ps.blockSize - 1), @intCast(i32, ps.sy));
-                    try bignum.fadj(self.alloc, &ps.cx, words, span, (me.x + (ps.blockSize >> 1)) & ~(ps.blockSize - 1), @intCast(i32, ps.sx));
+                    try bignum.fadj(self.alloc, &ps.cy, words, span, (me.y + (blockSize >> 1)) & ~(blockSize - 1), @intCast(i32, ps.sy));
+                    try bignum.fadj(self.alloc, &ps.cx, words, span, (me.x + (blockSize >> 1)) & ~(blockSize - 1), @intCast(i32, ps.sx));
                 }
             }
         }

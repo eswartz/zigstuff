@@ -55,7 +55,7 @@ pub const RenderedFile = struct {
 
         std.debug.print("iters={}, psx={}, psy={}\n", .{ iters.len, self.params.sx, self.params.sy });
 
-        const ps = self.params.blockSize;
+        const ps = self.storage.blockSize;
         var c : u32 = 0;
         for (workLoad.blocks) |block| {
             const px = block.px;
@@ -99,15 +99,15 @@ pub const RenderedFile = struct {
         std.mem.set(i32, iters, 0);
         try self.decompress_iters(iters, reader, fileSize);
 
-        var i : i32 = 0; var l : i32 = 0;
-        for (iters) |iter| {
-            if (iter != l) {
-                std.debug.print("{} ", .{iter});
-                l = iter;
-                i += 1;
-                if (@rem(i, 16) == 0) std.debug.print("\n", .{});
-            }
-        }
+        // var i : i32 = 0; var l : i32 = 0;
+        // for (iters) |iter| {
+        //     if (iter != l) {
+        //         std.debug.print("{} ", .{iter});
+        //         l = iter;
+        //         i += 1;
+        //         if (@rem(i, 16) == 0) std.debug.print("\n", .{});
+        //     }
+        // }
 
         try switch (self.params.words) {
             inline 1...bignum.MAXWORDS => |w| self.decompress_blocks(bignum.BigInt(w << 6), psx, psy, iters),
@@ -288,7 +288,7 @@ pub const RenderedFile = struct {
 
         std.debug.print("iters={}, psx={}, psy={}\n", .{ iters.len, self.params.sx, self.params.sy });
 
-        const ps = self.params.blockSize;
+        const ps = self.storage.blockSize;
         var c : u32 = 0;
         for (workLoad.blocks) |block| {
             const px = block.px;

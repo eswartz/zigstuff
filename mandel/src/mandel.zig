@@ -17,7 +17,6 @@ const rb = @import("rb.zig");
 pub const Params = struct {
     sx: u32,
     sy: u32,
-    blockSize: u16,
     zoom: u16,
     words: u16,
     magShift: u5,
@@ -29,7 +28,6 @@ pub const Params = struct {
         return Params{
             .sx = 1024,
             .sy = 1024,
-            .blockSize = 128,
             .cx = try alloc.dupe(u8, ".0000000000000000"),
             .cy = try alloc.dupe(u8, ".0000000000000000"),
             .zoom = 0,
@@ -48,15 +46,15 @@ pub const Params = struct {
         return std.math.scalbn(@floatCast(bignum.NativeFloat, 4.0), -@intCast(i16, self.zoom));
     }
 
-    pub fn pixelSpan(self: Params) BigIntMax {
-        const ps = self.blockSize;
-        const SEGS: u32 = @divExact(std.math.min(self.sx, self.sy), ps);
-        var i : i1032 = 1;
+    pub fn segments(self: Params, blockSize: u16) u32 {
+        return @divExact(std.math.min(self.sx, self.sy), blockSize);
+    }
+
+    pub fn pixelSpan(self: Params, blockSize: u16) BigIntMax {
+        var i : BigIntMax = 1;
         i <<= @intCast(u11, (self.words << 6) + 2);
         i >>= @intCast(u11, self.zoom);
-        i >>= std.math.log2_int(u32, SEGS);
-        // const floatStep = BigFloatType.fromFloat(params.span() / @intToFloat(bignum.NativeFloat, ps * SEGS));
-
+        i >>= std.math.log2_int(u32, self.segments(blockSize));
 
         return @intCast(BigIntMax, i);
     }
@@ -137,14 +135,15 @@ pub const Params = struct {
                 const rectSize = self.rectSize;
                 const data = self.data;
 
+                const blockSize = data.sz;
                 var all : u32 = 0;
                 var recalc : u32 = 0;
                 var oy: u32 = 0;
-                while (!stop.*.load(.Unordered) and oy < data.sz) : (oy += rectSize) {
+                while (!stop.*.load(.Unordered) and oy < blockSize) : (oy += rectSize) {
                     const py = self.py + oy;
                     const fy = self.fys[py];
                     var ox: u32 = 0;
-                    while (ox < data.sz) : (ox += rectSize) {
+                    while (ox < blockSize) : (ox += rectSize) {
                         const px = self.px + ox;
 
                         var iters = data.iter(ox, oy);
@@ -191,23 +190,14 @@ pub const Params = struct {
                 const fy0 = try bignum.parseBig(T, params.cy);
 
                 // split drawscape into segments
-                const ps = params.blockSize;
-                const SEGS: u32 = @divExact(std.math.min(params.sx, params.sy), ps);
-                const div = @intToFloat(bignum.NativeFloat, ps * SEGS);
+                const blockSize = storage.blockSize;
+                const SEGS = params.segments(blockSize);
+                const div = @intToFloat(bignum.NativeFloat, blockSize * SEGS);
                 var step = pspan / div;
-                // std.debug.print("SEGS = {}, ps = {}, span = {}\n", .{ SEGS, ps, pspan });
-                std.debug.print("SEGS = {}, ps = {}, span = {}, div = {}, step = {}\n", .{ SEGS, ps, pspan, div, step });
+                std.debug.print("segs = {}, span = {}, div = {}, step = {}\n", .{ SEGS, pspan, div, step });
                 const floatStep = BigFloatType.fromFloat(step);
-                // var floatStep = BigFloatType.fromFloat(pspan);
-                // {
-                //     var i : u32 = ps * SEGS;
-                //     while (i > 1) : (i >>= 1) floatStep >>= 1;
-                //     if (floatStep == 0) {
-                //         unreachable;
-                //     }
-                // }
 
-                var layer = try storage.ensure(params.zoom, params.blockSize);
+                var layer = try storage.ensure(params.zoom, blockSize);
                 var layerM1 = if (params.zoom > 0) storage.get(params.zoom - 1) else null;
 
                 var fss = try bignum.printBig(alloc, T, floatStep); defer alloc.free(fss);
@@ -242,11 +232,11 @@ pub const Params = struct {
 
                 // per block...
                 for (xys) |xy| {
-                    const px0 = xy.x * ps;
-                    const py0 = xy.y * ps;
+                    const px0 = xy.x * blockSize;
+                    const py0 = xy.y * blockSize;
 
                     // const coord = try BigCoord.init(T, alloc, fxs.items[px0], fys.items[py0]);
-                    const coord = BigCoord.init(fxs.items[px0], fys.items[py0]);
+                    const coord = BigCoord.initFrom(T, fxs.items[px0], fys.items[py0]);
                     const blockData = try layer.ensure(coord);
                     // std.debug.print("{},{} blockData = {*}\n", .{ px0, py0, blockData });
                     const blockDataM1 = if (layerM1 != null) layerM1.?.get(coord) else null;
@@ -331,6 +321,10 @@ pub const BigCoord = struct {
     pub fn init(xi : BigIntMax, yi: BigIntMax) Self {
         return .{ .x = xi, .y = yi };
     }
+    pub fn initFrom(comptime T : type, x : T, y: T) Self {
+        const shiftBits = config.MAXBITS - @typeInfo(T).Int.bits;
+        return .{ .x = @intCast(BigIntMax, x) << shiftBits, .y = @intCast(BigIntMax, y) << shiftBits };
+    }
 
     pub fn hash(self: Self) u64 {
         var hasher = std.hash.Wyhash.init(0);
@@ -362,7 +356,7 @@ pub const BlockData = struct {
 
     pub fn init(self: *Self, alloc: Allocator, sz: u16) !void {
         self.sz = sz;
-        self.iters = try alloc.alloc(i32, sz * sz);
+        self.iters = try alloc.alloc(i32, @intCast(u32, sz) * sz);
         std.mem.set(i32, self.iters, 0);
     }
 
@@ -394,14 +388,14 @@ pub const MandelLayer = struct {
     alloc: Allocator,
     zoom: u16,
     /// block size (pixels)
-    sz: u16,
+    blockSize: u16,
     /// cache of blocks
     blocks: BlockMap,
 
-    pub fn init(self: *Self, alloc: Allocator, zoom: u16, sz: u16) !void {
+    pub fn init(self: *Self, alloc: Allocator, zoom: u16, blockSize: u16) !void {
         self.alloc = alloc;
         self.zoom = zoom;
-        self.sz = sz;
+        self.blockSize = blockSize;
         self.blocks = BlockMap.init(alloc);
     }
 
@@ -446,12 +440,12 @@ pub const MandelLayer = struct {
         }
         {
             var cs = try coord.to_string(self.alloc); defer self.alloc.free(cs);
-            // std.debug.print("coord={s}\n", .{cs});
+            std.debug.print("coord={s}\n", .{cs});
             var res = try self.blocks.getOrPut(coord);
             var blockPtr = res.value_ptr;
             if (!res.found_existing) {
                 blockPtr.* = try self.alloc.create(BlockData);
-                try blockPtr.*.init(self.alloc, self.sz);
+                try blockPtr.*.init(self.alloc, self.blockSize);
             }
             return blockPtr.*;
         }
@@ -470,11 +464,13 @@ pub const MandelStorage = struct {
     }, 80);
 
     alloc: Allocator,
+    blockSize: u16,
     layers: LayerMap,
 
-    pub fn init(alloc: Allocator) !Self {
+    pub fn init(alloc: Allocator, blockSize: u16) !Self {
         return .{
             .alloc = alloc,
+            .blockSize = blockSize,
             .layers = LayerMap.init(alloc)
         };
     }
