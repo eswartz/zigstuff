@@ -32,10 +32,10 @@ pub const Viewer = struct {
     dataFile : []u8,
     storage : mandel.MandelStorage,
 
-    pub fn init(alloc: Allocator, winSize : u16, frameSize : u16, blockSize: u16) !Self {
-        var params = try Params.init(alloc);
-        params.sx = frameSize;
-        params.sy = frameSize;
+    pub fn init(alloc: Allocator) !Self {
+        var winSize : c_int = 1024;
+        var frameSize : u32 = 1024;
+        var blockSize : u16 = 128;
 
         var saveName = try alloc.dupe(u8, "save.json");
         var dataName = try alloc.dupe(u8, "data/zoom10_000.dat");
@@ -47,6 +47,11 @@ pub const Viewer = struct {
         }
 
         var storage = try mandel.MandelStorage.init(alloc, blockSize);
+
+        var params = try Params.init(alloc);
+
+        params.sx = frameSize;
+        params.sy = frameSize;
 
         sdl2.SDL_SetMainReady();
 
@@ -307,7 +312,8 @@ pub const Viewer = struct {
                     },
                     sdl2.SDLK_F4 => {
                         var file = try files.RenderedFile.init(&self.params, &self.storage);
-                        if (file.save(try std.fmt.allocPrint(self.alloc, "{s}.tst", .{self.dataFile}))) {
+                        // if (file.save(try std.fmt.allocPrint(self.alloc, "{s}.tst", .{self.dataFile}))) {
+                        if (file.save(self.dataFile)) {
                             cont = true;
                         } else |err| {
                             std.debug.print("Failed to save: {}\n", .{err});

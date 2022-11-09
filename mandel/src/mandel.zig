@@ -254,7 +254,7 @@ pub const Params = struct {
                     });
                 }
 
-                std.debug.print("Made {} items\n", .{blocks.items.len});
+                std.debug.print("Made {} blocks\n", .{blocks.items.len});
                 return .{
                     .fxs = fxs.toOwnedSlice(),
                     .fys = fys.toOwnedSlice(),
