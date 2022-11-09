@@ -15,6 +15,7 @@ pub fn build(b: *std.build.Builder) void {
     exe.linkLibC();
     exe.linkSystemLibrary("SDL2");
     exe.linkSystemLibrary("gmp");
+    exe.linkSystemLibrary("z");
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();

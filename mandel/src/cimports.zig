@@ -7,3 +7,7 @@ pub const sdl2 = @cImport({
 pub const gmp = @cImport({
     @cInclude("gmp.h");
 });
+
+pub const zlib = @cImport({
+    @cInclude("zlib.h");
+});

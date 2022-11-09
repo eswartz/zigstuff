@@ -254,6 +254,15 @@ pub const Viewer = struct {
                             cont = false;
                         }
                     },
+                    sdl2.SDLK_F4 => {
+                        var file = try files.RenderedFile.init(&self.params, &self.storage);
+                        if (file.save(self.dataFile)) {
+                            cont = true;
+                        } else |err| {
+                            std.debug.print("Failed to save: {}\n", .{err});
+                            cont = false;
+                        }
+                    },
                     sdl2.SDLK_F8 => {
                         var file = try files.RenderedFile.init(&self.params, &self.storage);
                         if (file.load(self.dataFile)) {

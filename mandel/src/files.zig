@@ -12,6 +12,7 @@ const File = std.fs.File;
 
 const cimports = @import("cimports.zig");
 const gmp = cimports.gmp;
+const zlib = cimports.zlib;
 
 var arena_instance = std.heap.ArenaAllocator.init(std.heap.raw_c_allocator);
 
@@ -44,10 +45,10 @@ pub const RenderedFile = struct {
             return error.UnsupportedVersion;
         }
 
-        try self.load_version_1_1(reader);
+        try self.load_version_1_1(reader, (try file.stat()).size);
     }
 
-    fn decompress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []const i32) !void {
+    inline fn decompress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []const i32) !void {
         _ = psy;
         var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage);
         defer workLoad.deinit(self.storage.alloc);
@@ -59,7 +60,7 @@ pub const RenderedFile = struct {
         for (workLoad.blocks) |block| {
             const px = block.px;
             const py = block.py;
-            std.debug.print("block={*}\n", .{ block.data });
+            // std.debug.print("block={*}\n", .{ block.data });
             var oy : u32 = 0;
             while (oy < ps) : (oy += 1) {
                 var ox : u32 = 0;
@@ -73,7 +74,7 @@ pub const RenderedFile = struct {
         }
     }
 
-    fn load_version_1_1(self: *Self, reader: File.Reader) !void {
+    fn load_version_1_1(self: *Self, reader: File.Reader, fileSize: u64) !void {
         var cxStr = try self.read_string(reader);
         var cyStr = try self.read_string(reader);
 
@@ -93,17 +94,57 @@ pub const RenderedFile = struct {
         self.params.sx = psx;
         self.params.sy = psy;
 
-        var zstr = try std.compress.gzip.gzipStream(self.arena, reader);
-        var exp = psx * psy;
+        const exp : u32 = psx * psy;
+        var iters = try self.arena.alloc(i32, exp);
+        std.mem.set(i32, iters, 0);
+        try self.decompress_iters(iters, reader, fileSize);
 
-        var iters : []i32 = try self.arena.alloc(i32, exp);
-        const end = try zstr.reader().readAll(@ptrCast([*]u8, iters)[0..exp*4]);
-        if (end < exp * 4) return error.FileFormatError;
+        var i : i32 = 0; var l : i32 = 0;
+        for (iters) |iter| {
+            if (iter != l) {
+                std.debug.print("{} ", .{iter});
+                l = iter;
+                i += 1;
+                if (@rem(i, 16) == 0) std.debug.print("\n", .{});
+            }
+        }
 
         try switch (self.params.words) {
             inline 1...bignum.MAXWORDS => |w| self.decompress_blocks(bignum.BigInt(w << 6), psx, psy, iters),
             else => unreachable,
         };
+    }
+
+    fn decompress_iters(self: Self, iters : []i32, reader : File.Reader, fileSize: u64) !void {
+        const zmem = try self.arena.alloc(u8, fileSize);
+        const zlen = try reader.readAll(zmem);
+
+        var zstr : zlib.z_stream = undefined;
+        std.mem.set(u8, @ptrCast([*]u8, &zstr)[0..@sizeOf(zlib.z_stream)], 0);
+        // window size (15, default) gzip header (+32)
+        if (zlib.inflateInit2(&zstr, 15 + 32) != zlib.Z_OK) return error.ZLibError;
+        zstr.next_in = zmem.ptr;
+        zstr.avail_in = @intCast(c_uint, zlen);
+
+        var i8ptr : usize = 0;
+        var iters8 = @ptrCast([*]u8, iters);
+
+        while (i8ptr < zlen) {
+            zstr.avail_out = @intCast(c_uint, fileSize);
+            zstr.next_out = iters8 + i8ptr;
+
+            const res = zlib.inflate(&zstr, if (zstr.avail_in == 0) zlib.Z_FINISH else zlib.Z_NO_FLUSH);
+            if (res == zlib.Z_STREAM_END) break;
+            if (res == zlib.Z_DATA_ERROR) {
+                std.debug.print("zlib error: {s}\n", .{zstr.msg});
+                return error.FileFormat;
+            }
+
+            i8ptr += zstr.total_out;
+            zstr.total_out = 0;
+        }
+
+        _ = zlib.inflateEnd(&zstr);
     }
 
     fn read_string(self: Self, reader : File.Reader) ![]u8 {
@@ -189,7 +230,6 @@ pub const RenderedFile = struct {
         return bistr;
     }
 
-
     pub fn save(self: *Self, path: []const u8) !void {
         var file = try std.fs.cwd().createFile(path, .{.truncate = true});
         defer file.close();
@@ -197,7 +237,9 @@ pub const RenderedFile = struct {
         var writer = file.writer();
         try self.write_string(writer, "jmandel_1.1");
 
-        var bits = (self.params.getDefaultIntSize() << 6);
+        // var bits = self.params.words << 6;
+        var bits = self.params.getDefaultIntSize() << 6;
+
         const cxStr = try self.write_decimal(self.params.cx, bits);
         const cyStr = try self.write_decimal(self.params.cy, bits);
         try self.write_string(writer, cxStr);
@@ -211,10 +253,99 @@ pub const RenderedFile = struct {
         try self.write_string(writer, try std.fmt.allocPrint(self.arena, "{}", .{ self.params.sx }));
         try self.write_string(writer, try std.fmt.allocPrint(self.arena, "{}", .{ self.params.sy }));
 
+        const iters = try self.arena.alloc(i32, self.params.sx * self.params.sy);
+        std.mem.set(i32, iters, 0);
+
+        try switch (self.params.words) {
+            inline 1...bignum.MAXWORDS => |w| self.compress_blocks(bignum.BigInt(w << 6), self.params.sx, self.params.sy, iters),
+            else => unreachable,
+        };
+
+        try self.compress_iters(iters, writer);
+
+        // var zstr = try std.compress.gzip.gzipStream(self.arena, reader);
+        // var exp = psx * psy;
+
+        // var iters : []i32 = try self.arena.alloc(i32, exp);
+        // const end = try zstr.reader().readAll(@ptrCast([*]u8, iters)[0..exp*4]);
+        // if (end < exp * 4) return error.FileFormatError;
+
+        // try switch (self.params.words) {
+        //     inline 1...bignum.MAXWORDS => |w| self.decompress_blocks(bignum.BigInt(w << 6), psx, psy, iters),
+        //     else => unreachable,
+        // };
+
         // // expect compression to be smaller than this...
         // var zcontent = try reader.readAllAlloc(self.arena, self.params.sx * self.params.sy * 4);
         // std.debug.print("zcontent size={}\n", .{zcontent.len});
     // _iters = content.decompress(_psx * _psy * 4, File.COMPRESSION_GZIP)
+    }
+
+    fn compress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []i32) !void {
+        _ = psy;
+        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage);
+        defer workLoad.deinit(self.storage.alloc);
+
+        std.debug.print("iters={}, psx={}, psy={}\n", .{ iters.len, self.params.sx, self.params.sy });
+
+        const ps = self.params.blockSize;
+        var c : u32 = 0;
+        for (workLoad.blocks) |block| {
+            const px = block.px;
+            const py = block.py;
+            // std.debug.print("block={*}\n", .{ block.data });
+            var oy : u32 = 0;
+            while (oy < ps) : (oy += 1) {
+                var ox : u32 = 0;
+                while (ox < ps) : (ox += 1) {
+                    const iter : i32 = block.data.iter(ox, oy);
+                    const iterBE = @byteSwap(iter);
+                    iters[(py + oy) * psx + (px + ox)] = iterBE;
+                    c += 1;
+                }
+            }
+        }
+    }
+
+    fn compress_iters(self: Self, iters: []i32, writer: File.Writer) !void {
+        var obuf = try self.arena.alloc(u8, 4096);
+
+        var zstr : zlib.z_stream = undefined;
+        std.mem.set(u8, @ptrCast([*]u8, &zstr)[0..@sizeOf(zlib.z_stream)], 0);
+
+        // var i8ptr : usize = 0;
+        var i8len : usize = iters.len * 4;
+
+        // zstr.next_in = @ptrCast([*c] u8, @alignCast(1, iters.ptr));
+        zstr.next_in = @ptrCast([*] u8, iters);
+        zstr.avail_in = @intCast(c_uint, i8len);
+
+        // window size (15, default) gzip header (+16)
+        const ires = zlib.deflateInit2(&zstr, zlib.Z_DEFAULT_COMPRESSION, zlib.Z_DEFLATED, 15 + 16, 8, zlib.Z_DEFAULT_STRATEGY);
+        if (ires != zlib.Z_OK) {
+            std.debug.print("init error: {}\n", .{ires});
+            return error.ZLibError;
+        }
+
+        while (zstr.avail_in != 0) {
+            zstr.avail_out = @intCast(c_uint, obuf.len);
+            zstr.next_out = obuf.ptr; //@ptrCast([*c] u8, &obuf);
+
+            const res = zlib.deflate(&zstr, if (zstr.avail_in == 0) zlib.Z_FINISH else zlib.Z_NO_FLUSH);
+            if (res == zlib.Z_STREAM_END) break;
+            if (res == zlib.Z_DATA_ERROR) {
+                std.debug.print("zlib error: {s}\n", .{zstr.msg});
+                return error.FileFormat;
+            }
+
+            const olen = obuf.len - zstr.avail_out;
+            std.debug.print("olen={}\n", .{olen});
+            _ = try writer.write(obuf[0..olen]);
+            // zstr.next_in += zstr.total_in;
+            // zstr.total_out = 0;
+        }
+
+        _ = zlib.deflateEnd(&zstr);
     }
 
     fn write_string(self: Self, writer : File.Writer, str: []const u8) !void {
@@ -264,6 +395,9 @@ pub const RenderedFile = struct {
             try list.appendSlice(strptr[0..@intCast(usize, i)]);
             i = 0;
             try list.append('.');
+            if (dec == 0) {
+                try list.append('0');
+            }
         }
         try list.appendSlice(strptr[i..strlen(strptr)]);
 

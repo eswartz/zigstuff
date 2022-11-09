@@ -245,6 +245,7 @@ pub const Params = struct {
                     // const coord = try BigCoord.init(T, alloc, fxs.items[px0], fys.items[py0]);
                     const coord = BigCoord.init(fxs.items[px0], fys.items[py0]);
                     const blockData = try layer.ensure(coord);
+                    std.debug.print("{},{} blockData = {*}\n", .{ px0, py0, blockData });
                     const blockDataM1 = if (layerM1 != null) layerM1.?.get(coord) else null;
 
                     try blocks.append(.{
@@ -414,20 +415,42 @@ pub const MandelLayer = struct {
 
     /// Get the block
     pub fn get(self: Self, coord: BigCoord) ?*BlockData {
+        // var c = coord;
+        // var i : u11 = 0;
+        // var m : i1024 = 0;
+        // while (i < 1024) {
+        //     var blockPtr = self.blocks.get(c);
+        //     if (blockPtr != null) {
+        //         return blockPtr;
+        //     }
+        //     i += 64;
+        //     c.x &= ~m;
+        //     c.y &= ~m;
+        //     m = (m << 64) | 0xffff_ffff_ffff_ffff;
+        // }
+        // return null;
         return self.blocks.get(coord);
     }
 
     /// Get the block
     pub fn ensure(self: *Self, coord: BigCoord) !*BlockData {
-        var cs = try coord.to_string(self.alloc); defer self.alloc.free(cs);
-        // std.debug.print("coord={s}\n", .{cs});
-        var res = try self.blocks.getOrPut(coord);
-        var blockPtr = res.value_ptr;
-        if (!res.found_existing) {
-            blockPtr.* = try self.alloc.create(BlockData);
-            try blockPtr.*.init(self.alloc, self.sz);
+        {
+            var blockPtr = self.get(coord);
+            if (blockPtr != null) {
+                return blockPtr.?;
+            }
         }
-        return blockPtr.*;
+        {
+            var cs = try coord.to_string(self.alloc); defer self.alloc.free(cs);
+            // std.debug.print("coord={s}\n", .{cs});
+            var res = try self.blocks.getOrPut(coord);
+            var blockPtr = res.value_ptr;
+            if (!res.found_existing) {
+                blockPtr.* = try self.alloc.create(BlockData);
+                try blockPtr.*.init(self.alloc, self.sz);
+            }
+            return blockPtr.*;
+        }
     }
 };
 
