@@ -42,22 +42,23 @@ pub const Params = struct {
         alloc.free(self.cy);
     }
 
-    pub fn span(self: Params) bignum.NativeFloat {
-        return std.math.scalbn(@floatCast(bignum.NativeFloat, 4.0), -@intCast(i16, self.zoom));
+    pub fn span(self: Params, calcSize : u32) bignum.NativeFloat {
+        const fullSpan = std.math.scalbn(@floatCast(bignum.NativeFloat, 4.0), -@intCast(i16, self.zoom));
+        return fullSpan / @intToFloat(bignum.NativeFloat, @divExact(self.sx, calcSize));
     }
 
-    pub fn segments(self: Params, blockSize: u16) u32 {
-        return @divExact(std.math.min(self.sx, self.sy), blockSize);
+    pub fn segments(_: Params, calcSize: u32, blockSize: u16) u32 {
+        return @divExact(calcSize, blockSize);
     }
 
-    pub fn pixelSpan(self: Params, blockSize: u16) BigIntMax {
-        var i : BigIntMax = 1;
-        i <<= @intCast(u11, (self.words << 6) + 2);
-        i >>= @intCast(u11, self.zoom);
-        i >>= std.math.log2_int(u32, self.segments(blockSize));
+    // pub fn pixelSpan(self: Params, calcSize: u32, blockSize: u16) BigIntMax {
+    //     var i : BigIntMax = 1;
+    //     i <<= @intCast(u11, (self.words << 6) + 2);
+    //     i >>= @intCast(u11, self.zoom);
+    //     i >>= std.math.log2_int(u32, self.segments(calcSize, blockSize));
 
-        return @intCast(BigIntMax, i);
-    }
+    //     return @intCast(BigIntMax, i);
+    // }
 
     /// Get number of words needed
     pub fn getDefaultIntSize(self: Params) u16 {
@@ -177,13 +178,14 @@ pub const Params = struct {
             fxs: []T,
             fys: []T,
 
-            pub fn init(alloc: Allocator, params: Params, storage: *MandelStorage) !Self {
+            pub fn init(alloc: Allocator, params: Params, storage: *MandelStorage,
+                        calcSize : u32, xoffs : i32, yoffs : i32) !Self {
                 // var params: Params = selfOrig;
 
                 var fxs = std.ArrayList(T).init(alloc);
                 var fys = std.ArrayList(T).init(alloc);
 
-                const pspan = params.span();
+                const pspan = params.span(calcSize);
                 std.debug.print("span = {}\n", .{pspan});
 
                 const fx0 = try bignum.parseBig(T, params.cx);
@@ -191,7 +193,7 @@ pub const Params = struct {
 
                 // split drawscape into segments
                 const blockSize = storage.blockSize;
-                const SEGS = params.segments(blockSize);
+                const SEGS = params.segments(calcSize, blockSize);
                 const div = @intToFloat(bignum.NativeFloat, blockSize * SEGS);
                 var step = pspan / div;
                 std.debug.print("segs = {}, span = {}, div = {}, step = {}\n", .{ SEGS, pspan, div, step });
@@ -205,17 +207,17 @@ pub const Params = struct {
 
                 // calculate X and Y coords once
                 {
-                    const hx = @intCast(i32, params.sx / 2);
+                    const hx = @intCast(i32, calcSize / 2);
                     var px: i32 = -hx;
-                    while (px < params.sx) : (px += 1) {
-                        try fxs.append(fx0 + floatStep * px);
+                    while (px < calcSize) : (px += 1) {
+                        try fxs.append(fx0 + floatStep * (px + xoffs));
                     }
                 }
                 {
-                    const hy = @intCast(i32, params.sy / 2);
+                    const hy = @intCast(i32, calcSize / 2);
                     var py: i32 = -hy;
-                    while (py < params.sy) : (py += 1) {
-                        try fys.append(fy0 + floatStep * py);
+                    while (py < calcSize) : (py += 1) {
+                        try fys.append(fy0 + floatStep * (py + yoffs));
                     }
                 }
 

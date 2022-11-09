@@ -32,8 +32,10 @@ pub const Viewer = struct {
     dataFile : []u8,
     storage : mandel.MandelStorage,
 
-    pub fn init(alloc: Allocator) !Self {
+    pub fn init(alloc: Allocator, winSize : u16, frameSize : u16, blockSize: u16) !Self {
         var params = try Params.init(alloc);
+        params.sx = frameSize;
+        params.sy = frameSize;
 
         var saveName = try alloc.dupe(u8, "save.json");
         var dataName = try alloc.dupe(u8, "data/zoom10_000.dat");
@@ -44,7 +46,7 @@ pub const Viewer = struct {
             if (argIter.next()) |arg| { dataName = try alloc.dupe(u8, arg); std.debug.print("data name = {s}\n", .{dataName}); }
         }
 
-        var storage = try mandel.MandelStorage.init(alloc, 128);
+        var storage = try mandel.MandelStorage.init(alloc, blockSize);
 
         sdl2.SDL_SetMainReady();
 
@@ -53,7 +55,7 @@ pub const Viewer = struct {
         if (sdl2.SDL_VideoInit(0) != 0) return error.SDLError;
 
         var window = sdl2.SDL_CreateWindow("Mandelbrot!", sdl2.SDL_WINDOWPOS_UNDEFINED, sdl2.SDL_WINDOWPOS_UNDEFINED,
-            @intCast(i32, params.sx), @intCast(i32, params.sy),
+            winSize, winSize,
             sdl2.SDL_WINDOW_RESIZABLE | sdl2.SDL_WINDOW_ALLOW_HIGHDPI);
         if (window == null) return error.SDLError;
 
@@ -134,7 +136,19 @@ pub const Viewer = struct {
         var timer = try std.time.Timer.start();
         const timeStart = timer.lap();
 
-        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage);
+        var wx : c_int = undefined;
+        var wy : c_int = undefined;
+        _ = sdl2.SDL_GetWindowSize(self.window, &wx, &wy);
+        const calcSize = @intCast(u32, std.math.max(wx, wy));
+
+        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage,
+                calcSize,
+                // @divExact(@intCast(i32, calcSize) - @intCast(i32, self.params.sx), 2),
+                // @divExact(@intCast(i32, calcSize) - @intCast(i32, self.params.sy), 2),
+                // (@intCast(i32, calcSize) - @intCast(i32, self.params.sx)),
+                // (@intCast(i32, calcSize) - @intCast(i32, self.params.sy)),
+                0, 0,
+        );
         defer workLoad.deinit(self.alloc);
 
         std.debug.print("time for making blocks = {}\n", .{timer.lap() - timeStart});
@@ -243,13 +257,17 @@ pub const Viewer = struct {
     }
 
     fn handleInput(self: *Self) !bool {
+        var wx : c_int = undefined;
+        var wy : c_int = undefined;
+        _ = sdl2.SDL_GetWindowSize(self.window, &wx, &wy);
+        const calcSize = @intCast(u32, std.math.max(wx, wy));
         const blockSize = self.storage.blockSize;
         var ps = &self.params;
         var event: sdl2.SDL_Event = undefined;
         var cont = false;
         while (sdl2.SDL_WaitEventTimeout(&event, 10) != 0) {
             var words = ps.words;
-            var span = ps.span();
+            var span = ps.span(calcSize);
             if (event.type == sdl2.SDL_QUIT) {
                 self.exit = true;
                 std.debug.print("Cancelling...\n", .{});
@@ -257,7 +275,10 @@ pub const Viewer = struct {
             } else if (event.type == sdl2.SDL_KEYDOWN) {
                 var ke = @ptrCast(*sdl2.SDL_KeyboardEvent, &event);
                 cont = true;
-                const shiftAmt: u5 = if ((ke.keysym.mod & sdl2.KMOD_LSHIFT) != 0) 4 else 1;
+
+                var minShift : u5 = std.math.min(1, @intCast(u5, std.math.log2_int(u32, @intCast(u32, std.math.min(wx, wy)) / blockSize)));
+                const shiftAmt: u5 = if ((ke.keysym.mod & sdl2.KMOD_LSHIFT) != 0) (minShift + 3) else minShift;
+                std.debug.print("Min shift= {}, shift = {}, span = {}\n", .{ minShift, shiftAmt, @floatCast(f64, span) });
                 _ = switch (ke.keysym.sym) {
                     sdl2.SDLK_ESCAPE => { self.exit = true; std.debug.print("Cancelling...\n", .{}); },
                     sdl2.SDLK_PLUS, sdl2.SDLK_EQUALS => ps.zoom += 1,
@@ -286,7 +307,7 @@ pub const Viewer = struct {
                     },
                     sdl2.SDLK_F4 => {
                         var file = try files.RenderedFile.init(&self.params, &self.storage);
-                        if (file.save(self.dataFile)) {
+                        if (file.save(try std.fmt.allocPrint(self.alloc, "{s}.tst", .{self.dataFile}))) {
                             cont = true;
                         } else |err| {
                             std.debug.print("Failed to save: {}\n", .{err});
@@ -308,7 +329,7 @@ pub const Viewer = struct {
                 };
             } else if (event.type == sdl2.SDL_MOUSEBUTTONDOWN) {
                 var me = @ptrCast(*sdl2.SDL_MouseButtonEvent, &event);
-                if (me.button == 1) {
+                if (me.button == 1 and (sdl2.SDL_GetModState() & sdl2.KMOD_SHIFT) != 0) {
                     cont = true;
                     // recenter on mouse position
                     try bignum.fadj(self.alloc, &ps.cy, words, span, (me.y + (blockSize >> 1)) & ~(blockSize - 1), @intCast(i32, ps.sy));

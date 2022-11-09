@@ -71,7 +71,7 @@ fn fillBoxesInnerToOuterRange(xys: []XY, idx0: u32, cx: u32, cy: u32, s: u32) u3
 
     // draw smaller boxes
     var idx = idx0;
-    if (s > 0) {
+    if (s > 1) {
         idx = fillBoxesInnerToOuterRange(xys, idx, cx, cy, s - 2);
     }
 
@@ -95,8 +95,12 @@ fn fillBoxesInnerToOuterRange(xys: []XY, idx0: u32, cx: u32, cy: u32, s: u32) u3
 }
 
 pub fn fillBoxesInnerToOuter(xys: []XY, SEGS: u32) void {
+    if (SEGS == 1) {
+        xys[0] = .{ .x = 0, .y = 0 };
+        return;
+    }
     var idx: u32 = 0;
-    idx = fillBoxesInnerToOuterRange(xys, idx, SEGS / 2, SEGS / 2, SEGS);
+    idx = fillBoxesInnerToOuterRange(xys, idx, @divExact(SEGS, 2), @divExact(SEGS, 2), SEGS);
     if (idx != SEGS * SEGS) unreachable;
 }
 

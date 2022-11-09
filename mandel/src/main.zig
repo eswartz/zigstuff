@@ -7,7 +7,7 @@ pub fn main() !void {
     }){};
     var alloc = gpa.allocator();
     // const alloc = std.heap.c_allocator;
-    var v = try viewer.Viewer.init(alloc);
+    var v = try viewer.Viewer.init(alloc, 1024, 2048, 128);
     try v.run();
     std.debug.print("Bye!\n", .{});
     v.deinit();
