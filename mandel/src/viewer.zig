@@ -162,6 +162,7 @@ pub const Viewer = struct {
                 }
 
                 const changed = try self.recalc();
+                std.debug.print("changed={}\n", .{changed});
 
                 while (true) {
                     const cont = try self.handleInput();
@@ -526,10 +527,10 @@ pub const Viewer = struct {
                     sdl2.SDLK_SPACE => try self.render(),
                     sdl2.SDLK_PLUS, sdl2.SDLK_EQUALS => ps.zoom += 1,
                     sdl2.SDLK_MINUS => ps.zoom = if (ps.zoom > 1) ps.zoom - 1 else 0,
-                    sdl2.SDLK_UP => try bignum.faddShift(self.alloc, &ps.cy, words, -span, shiftAmt),
-                    sdl2.SDLK_DOWN => try bignum.faddShift(self.alloc, &ps.cy, words, span, shiftAmt),
-                    sdl2.SDLK_LEFT => try bignum.faddShift(self.alloc, &ps.cx, words, -span, shiftAmt),
-                    sdl2.SDLK_RIGHT => try bignum.faddShift(self.alloc, &ps.cx, words, span, shiftAmt),
+                    sdl2.SDLK_UP => if (self.pause or !self.autoSave) try bignum.faddShift(self.alloc, &ps.cy, words, -span, shiftAmt),
+                    sdl2.SDLK_DOWN => if (self.pause or !self.autoSave) try bignum.faddShift(self.alloc, &ps.cy, words, span, shiftAmt),
+                    sdl2.SDLK_LEFT => if (self.pause or !self.autoSave) try bignum.faddShift(self.alloc, &ps.cx, words, -span, shiftAmt),
+                    sdl2.SDLK_RIGHT => if (self.pause or !self.autoSave) try bignum.faddShift(self.alloc, &ps.cx, words, span, shiftAmt),
                     sdl2.SDLK_PAGEDOWN => ps.iters = @intCast(u32, std.math.max(0, @intCast(i32, ps.iters) - if (shift) @intCast(i32, 250) else @intCast(i32, 50))),
                     sdl2.SDLK_PAGEUP => ps.iters += if (shift) @intCast(u32, 250) else @intCast(u32, 50),
                     sdl2.SDLK_LEFTBRACKET => ps.words = if (words > 1) words - 1 else 1,
