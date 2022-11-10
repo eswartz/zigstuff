@@ -49,6 +49,7 @@ pub const Viewer = struct {
                         \\
                         \\ -s pot: render size
                         \\ -r pot: window size
+                        \\ -b pot: block size
                         \\
                         , .{});
                     std.process.exit(0);
@@ -78,6 +79,7 @@ pub const Viewer = struct {
             }
         }
 
+        if (blockSize > winSize) blockSize = @intCast(u16, winSize);
         if (winSize > frameSize) frameSize = @intCast(u32, winSize);
 
         if (saveName.len == 0) saveName = try alloc.dupe(u8, "save.json");
