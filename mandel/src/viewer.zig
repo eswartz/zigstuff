@@ -31,12 +31,17 @@ pub const Viewer = struct {
     saveFile : []u8,
     dataFile : []u8,
     storage : mandel.MandelStorage,
+    autoSave : bool,
+    autoFrom : u16,
+    autoTo : u16,
 
     pub fn init(alloc: Allocator) !Self {
         var winSize : c_int = 1024;
         var frameSize : u32 = 1024;
         var blockSize : u16 = 128;
 
+        var autoFrom : u16 = 0;
+        var autoTo : u16 = 0;
         var saveName : []u8 = "";
         var dataName : []u8 = "";
         {
@@ -45,11 +50,12 @@ pub const Viewer = struct {
             while (argIter.next()) |arg| {
                 if (std.mem.eql(u8, arg, "-h")) {
                     std.debug.print(
-                        \\ help: [options] .json .dat
+                        \\ help: [options] .json ...%Z....dat
                         \\
                         \\ -s pot: render size
                         \\ -r pot: window size
                         \\ -b pot: block size
+                        \\ -a N..M: automatically render zoom levels N..M
                         \\
                         , .{});
                     std.process.exit(0);
@@ -67,6 +73,15 @@ pub const Viewer = struct {
                     blockSize = try std.fmt.parseInt(u16, argIter.next().?, 10);
                     if (!std.math.isPowerOfTwo(blockSize)) {
                         return error.BlockSizeMustBePowerOfTwo;
+                    }
+                } else if (std.mem.eql(u8, arg, "-a")) {
+                    var argVal = argIter.next().?;
+                    if (std.mem.indexOf(u8, argVal, "..")) |idx| {
+                        autoFrom = try std.fmt.parseInt(u16, argVal[0..idx], 10);
+                        autoTo = try std.fmt.parseInt(u16, argVal[idx+2..argVal.len], 10);
+                        if (autoFrom > autoTo) return error.RangeBackwards;
+                    } else {
+                        return error.InvalidRange;
                     }
                 } else if (arg[0] != '-') {
                     if (saveName.len == 0)
@@ -91,6 +106,10 @@ pub const Viewer = struct {
 
         params.sx = frameSize;
         params.sy = frameSize;
+        if (autoFrom < autoTo) {
+            params.zoom = autoFrom;
+            params.magShift = 0;
+        }
 
         sdl2.SDL_SetMainReady();
 
@@ -117,21 +136,69 @@ pub const Viewer = struct {
             .pause = false,
             .saveFile = saveName,
             .dataFile = dataName,
-            .storage = storage
+            .storage = storage,
+            .autoSave = autoFrom < autoTo,
+            .autoFrom = autoFrom,
+            .autoTo = autoTo,
+        };
+    }
+
+    fn render(self: *Self) !bool {
+        return try switch (self.params.words) {
+            inline 1...bignum.MAXWORDS => |v| self.renderForParams(bignum.BigInt(64 * v)),
+            else => self.renderForParams(bignum.BigInt(64 * bignum.MAXWORDS)),
         };
     }
 
     pub fn run(self: *Self) !void {
-        while (!self.exit) {
-            try switch (self.params.words) {
-                inline 1...bignum.MAXWORDS => |v| self.renderForParams(bignum.BigInt(64 * v)),
-                else => self.renderForParams(bignum.BigInt(64 * bignum.MAXWORDS)),
-            };
+        if (self.autoSave) {
+            try self.params.readConfig(self.alloc, self.saveFile);
+            self.params.zoom = self.autoFrom;
+            self.params.magShift = 0;
 
-            if (self.pause) {
-                while (!self.exit) {
-                    if (try self.handleInput())
-                        break;
+            while (true) {
+                _ = try self.loadData();
+                const changed = try self.render();
+
+                _ = try self.handleInput();
+                if (self.exit) {
+                    return;
+                }
+
+                if (!changed) {
+                    std.debug.print("No changes for {} of {}\n", .{ self.params.zoom, self.autoTo });
+                } else {
+                    std.debug.print("Saving {} of {}\n", .{ self.params.zoom, self.autoTo });
+                    if (self.saveData()) |_| {
+                        // save memory
+                    } else |err| {
+                        return err;
+                    }
+                }
+
+                if (self.params.zoom > 0) {
+                    self.storage.remove(self.params.zoom - 1);
+                }
+                self.params.zoom += 1;
+                if (self.params.zoom <= self.autoTo) {
+                    self.params.words = self.params.getDefaultIntSize();
+                } else {
+                    self.exit = true;
+                    return;
+                }
+
+            } else |err| {
+                return err;
+            }
+        } else {
+            while (!self.exit) {
+                _ = try self.render();
+
+                if (self.pause) {
+                    while (!self.exit) {
+                        if (try self.handleInput())
+                            break;
+                    }
                 }
             }
         }
@@ -156,11 +223,13 @@ pub const Viewer = struct {
 
                 const current = block.iter(ox, oy);
 
-                var g: u8 = @intCast(u8, if (current < 0 or current > self.params.iters) 0 else current & 0xff);
+                var gamma: u8 = @intCast(u8, if (current < 0 or current > self.params.iters) 0 else current & 0xff);
                 // const a = @intCast(u8, if (current <= 0) 0x0 else if (current > self.params.iters) 0xff else @intCast(u32, (@intCast(u32, current) * 255 / self.params.iters)) & 0xff);
                 const a : u8 = 0xff;
-                g = (g << 7) | (g >> 1);
-                _ = sdl2.SDL_SetRenderDrawColor(self.renderer, g, g, g, a);
+                const r = (gamma << 5) | (gamma >> 3);
+                const g = (gamma << 6) | (gamma >> 2);
+                const b = (gamma << 7) | (gamma >> 1);
+                _ = sdl2.SDL_SetRenderDrawColor(self.renderer, r, g, b, a);
 
                 rect.x = @intToFloat(f32, px);
                 rect.y = @intToFloat(f32, py);
@@ -189,7 +258,7 @@ pub const Viewer = struct {
         };
     }
 
-    fn renderForParams(self: *Self, comptime BigIntType: type) !void {
+    fn renderForParams(self: *Self, comptime BigIntType: type) !bool {
         std.debug.print("Rendering with BigInt({s}) at x= {s}, y= {s}, zoom= {}, iters= {}...\n", .{ @typeName(BigIntType), self.params.cx, self.params.cy, self.params.zoom, self.params.iters });
 
         _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 0);
@@ -219,22 +288,27 @@ pub const Viewer = struct {
         std.debug.print("time for first block draw = {}\n", .{timer.lap() - timeStart});
 
         if (self.pause) {
-            return;
+            return false;
         }
 
         const BlockType = @TypeOf(workLoad.blocks[0]);
 
         const ThreadInfo = struct {
-            fn calcThread(stop: *std.atomic.Atomic(bool), readyBlocks: *std.ArrayList(*BlockType), readyMutex: *std.Thread.Mutex,
+            fn calcThread(stop: *std.atomic.Atomic(bool),
+                    readyBlocks: *std.ArrayList(*BlockType), readyMutex: *std.Thread.Mutex,
                     blockIndex: *std.atomic.Atomic(usize), blocks: []BlockType,
-                    blocksLeft: *std.atomic.Atomic(usize)) !void {
+                    blocksLeft: *std.atomic.Atomic(usize),
+                    blocksChanged: *std.atomic.Atomic(usize),
+                    ) !void {
                 while (!stop.load(.Unordered)) {
                     var myIndex = blockIndex.fetchAdd(1, .SeqCst);
                     if (myIndex >= blocks.len) break;
 
                     var block = &blocks[myIndex];
 
-                    try block.calculate(stop);
+                    if (try block.calculate(stop)) {
+                        _ = blocksChanged.fetchAdd(1, .SeqCst);
+                    }
 
                     readyMutex.lock();
                     defer readyMutex.unlock();
@@ -250,6 +324,7 @@ pub const Viewer = struct {
         var readyBlocks = std.ArrayList(*BlockType).init(self.alloc);
         defer readyBlocks.deinit();
         var readyMutex: std.Thread.Mutex = .{};
+        var blocksChanged = std.atomic.Atomic(usize).init(0);
         var blockIndex = std.atomic.Atomic(usize).init(0);
         var blocksLeft = std.atomic.Atomic(usize).init(workLoad.blocks.len);
 
@@ -260,7 +335,7 @@ pub const Viewer = struct {
         while (nt < NTHREADS) : (nt += 1) {
             threads[nt] = try std.Thread.spawn(.{}, ThreadInfo.calcThread, .{
                 &stop, &readyBlocks, &readyMutex,
-                &blockIndex, workLoad.blocks, &blocksLeft
+                &blockIndex, workLoad.blocks, &blocksLeft, &blocksChanged,
             });
         }
 
@@ -288,6 +363,9 @@ pub const Viewer = struct {
                         if (blocksLeft.load(.Acquire) == 0) {
                             done = true;
                             std.debug.print("time for calculation   = {d}s\n", .{@intToFloat(f64, (timer.lap() - timeStart)) / 1.0e9});
+                            if (self.autoSave) {
+                                return blocksChanged.load(.SeqCst) > 0;
+                            }
                         }
                         break;
                     }
@@ -311,11 +389,45 @@ pub const Viewer = struct {
         for (threads[0..NTHREADS]) |thread| {
             thread.join();
         }
+
+        return blocksChanged.load(.SeqCst) > 0;
     }
 
     fn setPause(self: *Self, p: bool) void {
         std.debug.print("{s}\n", .{if (p) "PAUSE" else "RESUME"});
         self.pause = p;
+    }
+
+    fn formatDataFile(self: Self) ![]u8 {
+        var zoomStr = try std.fmt.allocPrint(self.alloc, "{:3}", .{ self.params.zoom }); defer self.alloc.free(zoomStr);
+        const replSize = std.mem.replacementSize(u8, self.dataFile, "%Z", zoomStr);
+        const data = try self.alloc.alloc(u8, replSize);
+        _ = std.mem.replace(u8, self.dataFile, "%Z", zoomStr, data);
+        _ = std.mem.replace(u8, data, " ", "0", data);
+        std.debug.print("Expanded {s} to {s}\n", .{self.dataFile, data});
+        return data;
+    }
+
+    fn saveData(self: *Self) !bool {
+        var data = try self.formatDataFile(); defer self.alloc.free(data);
+        var file = try files.RenderedFile.init(&self.params, &self.storage);
+        if (file.save(data)) {
+            return true;
+        } else |err| {
+            std.debug.print("Failed to save: {}\n", .{err});
+            return false;
+        }
+    }
+
+    fn loadData(self: *Self) !bool {
+        var data = try self.formatDataFile(); defer self.alloc.free(data);
+        var file = try files.RenderedFile.init(&self.params, &self.storage);
+        if (file.load(data)) {
+            return true;
+        } else |err| {
+            std.debug.print("Failed to load: {}\n", .{err});
+            return false;
+        }
     }
 
     fn handleInput(self: *Self) !bool {
@@ -369,25 +481,8 @@ pub const Viewer = struct {
                             cont = false;
                         }
                     },
-                    sdl2.SDLK_F4 => {
-                        var file = try files.RenderedFile.init(&self.params, &self.storage);
-                        // if (file.save(try std.fmt.allocPrint(self.alloc, "{s}.tst", .{self.dataFile}))) {
-                        if (file.save(self.dataFile)) {
-                            cont = true;
-                        } else |err| {
-                            std.debug.print("Failed to save: {}\n", .{err});
-                            cont = false;
-                        }
-                    },
-                    sdl2.SDLK_F8 => {
-                        var file = try files.RenderedFile.init(&self.params, &self.storage);
-                        if (file.load(self.dataFile)) {
-                            cont = true;
-                        } else |err| {
-                            std.debug.print("Failed to load: {}\n", .{err});
-                            cont = false;
-                        }
-                    },
+                    sdl2.SDLK_F4 => cont = try self.saveData(),
+                    sdl2.SDLK_F8 => cont = try self.loadData(),
                     sdl2.SDLK_PAUSE => { self.setPause(!self.pause); cont = true; },
                     '0'...'9' => |v| ps.magShift = @intCast(u5, v - '0'),
                     else => cont = false,

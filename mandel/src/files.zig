@@ -14,8 +14,6 @@ const cimports = @import("cimports.zig");
 const gmp = cimports.gmp;
 const zlib = cimports.zlib;
 
-var arena_instance = std.heap.ArenaAllocator.init(std.heap.raw_c_allocator);
-
 pub const DecimalMath = struct {
     const Self = @This();
 
@@ -296,13 +294,14 @@ pub const RenderedFile = struct {
 
     params: *Params,
     storage : *mandel.MandelStorage,
-    arena: Allocator,
+    alloc: Allocator,
 
     pub fn init(params: *Params, storage: *mandel.MandelStorage) !Self {
         return Self{
             .params = params,
             .storage = storage,
-            .arena = arena_instance.allocator()
+            // .alloc = arena_instance.allocator()
+            .alloc = std.heap.page_allocator,
         };
     }
 
@@ -315,7 +314,7 @@ pub const RenderedFile = struct {
         defer file.close();
 
         var reader = file.reader();
-        var version = try self.read_string(reader);
+        var version = try self.read_string(reader); defer self.alloc.free(version);
         if (!std.mem.eql(u8, version, "jmandel_1.1")) {
             return error.UnsupportedVersion;
         }
@@ -324,27 +323,38 @@ pub const RenderedFile = struct {
     }
 
     fn load_version_1_1(self: *Self, reader: File.Reader, fileSize: u64) !void {
-        var cxStr = try self.read_string(reader);
-        var cyStr = try self.read_string(reader);
+        var cxStr = try self.read_string(reader); defer self.alloc.free(cxStr);
+        var cyStr = try self.read_string(reader); defer self.alloc.free(cyStr);
 
-        self.params.zoom = try std.fmt.parseInt(u16, try self.read_string(reader), 10);
+        {
+            const zoomStr = try self.read_string(reader); defer self.alloc.free(zoomStr);
+            self.params.zoom = try std.fmt.parseInt(u16, zoomStr, 10);
+        }
 
         var bits = self.params.getDefaultIntSize() << 6;
         self.params.words = bits >> 6;
         self.params.cx = try DecimalMath.parse_decimal(self.storage.alloc, cxStr, bits);
         self.params.cy = try DecimalMath.parse_decimal(self.storage.alloc, cyStr, bits);
 
-        var minIters = try std.fmt.parseInt(u32, try self.read_string(reader), 10);
-        _ = minIters;
-        self.params.iters = try std.fmt.parseInt(u32, try self.read_string(reader), 10);
+        {
+            const minItersStr = try self.read_string(reader); defer self.alloc.free(minItersStr);
+            var minIters = try std.fmt.parseInt(u32, minItersStr, 10);
+            _ = minIters;
+        }
+        {
+            const itersStr = try self.read_string(reader); defer self.alloc.free(itersStr);
+            self.params.iters = try std.fmt.parseInt(u32, itersStr, 10);
+        }
 
-        const psx = try std.fmt.parseInt(u32, try self.read_string(reader), 10);
-        const psy = try std.fmt.parseInt(u32, try self.read_string(reader), 10);
+        const psxStr = try self.read_string(reader); defer self.alloc.free(psxStr);
+        const psyStr = try self.read_string(reader); defer self.alloc.free(psyStr);
+        const psx = try std.fmt.parseInt(u32, psxStr, 10);
+        const psy = try std.fmt.parseInt(u32, psyStr, 10);
         self.params.sx = psx;
         self.params.sy = psy;
 
         const exp : u32 = psx * psy;
-        var iters = try self.arena.alloc(i32, exp);
+        var iters = try self.alloc.alloc(i32, exp); defer self.alloc.free(iters);
         std.mem.set(i32, iters, 0);
         try self.decompress_iters(iters, reader, fileSize);
 
@@ -357,7 +367,7 @@ pub const RenderedFile = struct {
     }
 
     fn decompress_iters(self: Self, iters : []i32, reader : File.Reader, fileSize: u64) !void {
-        const zmem = try self.arena.alloc(u8, fileSize);
+        const zmem = try self.alloc.alloc(u8, fileSize); defer self.alloc.free(zmem);
         const zlen = try reader.readAll(zmem);
 
         var zstr : zlib.z_stream = undefined;
@@ -401,10 +411,6 @@ pub const RenderedFile = struct {
         for (workLoad.blocks) |block| {
             const px = block.px;
             const py = block.py;
-            // std.debug.print("block={*}\n", .{ block.data });
-
-            // var l:i32 = 0;
-            // var i:i32 = 0;
 
             var oy : u32 = 0;
             while (oy < ps) : (oy += 1) {
@@ -429,7 +435,7 @@ pub const RenderedFile = struct {
 
     fn read_string(self: Self, reader : File.Reader) ![:0]u8 {
         var length = try reader.readIntBig(u16);
-        var str = try self.arena.allocSentinel(u8, length, 0);
+        var str = try self.alloc.allocSentinel(u8, length, 0);
         var len = try reader.read(str);
         if (len != length) return error.BadFileFormat;
         std.debug.print("--> {s}\n", .{str});
@@ -441,25 +447,25 @@ pub const RenderedFile = struct {
         defer file.close();
 
         var writer = file.writer();
-        try self.write_string(writer, "jmandel_1.1");
+        try self.write_string_free(writer, try self.alloc.dupe(u8, "jmandel_1.1"));
 
         // var bits = self.params.words << 6;
         var bits = self.params.getDefaultIntSize() << 6;
 
-        const cxStr = try DecimalMath.write_decimal(self.arena, self.params.cx, bits);
-        const cyStr = try DecimalMath.write_decimal(self.arena, self.params.cy, bits);
-        try self.write_string(writer, cxStr);
-        try self.write_string(writer, cyStr);
+        const cxStr = try DecimalMath.write_decimal(self.alloc, self.params.cx, bits);
+        const cyStr = try DecimalMath.write_decimal(self.alloc, self.params.cy, bits);
+        try self.write_string_free(writer, cxStr);
+        try self.write_string_free(writer, cyStr);
 
-        try self.write_string(writer, try std.fmt.allocPrint(self.arena, "{}", .{ self.params.zoom }));
+        try self.write_string_free(writer, try std.fmt.allocPrint(self.alloc, "{}", .{ self.params.zoom }));
 
-        try self.write_string(writer, try std.fmt.allocPrint(self.arena, "{}", .{ self.params.iters }));
-        try self.write_string(writer, try std.fmt.allocPrint(self.arena, "{}", .{ self.params.iters }));
+        try self.write_string_free(writer, try std.fmt.allocPrint(self.alloc, "{}", .{ self.params.iters }));
+        try self.write_string_free(writer, try std.fmt.allocPrint(self.alloc, "{}", .{ self.params.iters }));
 
-        try self.write_string(writer, try std.fmt.allocPrint(self.arena, "{}", .{ self.params.sx }));
-        try self.write_string(writer, try std.fmt.allocPrint(self.arena, "{}", .{ self.params.sy }));
+        try self.write_string_free(writer, try std.fmt.allocPrint(self.alloc, "{}", .{ self.params.sx }));
+        try self.write_string_free(writer, try std.fmt.allocPrint(self.alloc, "{}", .{ self.params.sy }));
 
-        const iters = try self.arena.alloc(i32, self.params.sx * self.params.sy);
+        const iters = try self.alloc.alloc(i32, self.params.sx * self.params.sy); defer self.alloc.free(iters);
         std.mem.set(i32, iters, 0);
 
         try switch (self.params.words) {
@@ -470,10 +476,10 @@ pub const RenderedFile = struct {
         try self.compress_iters(iters, writer);
     }
 
-    fn write_string(self: Self, writer : File.Writer, str: []const u8) !void {
-        _=self;
+    fn write_string_free(self: Self, writer : File.Writer, str: []u8) !void {
         try writer.writeIntBig(u16, @intCast(u16, str.len));
         try writer.writeAll(str);
+        self.alloc.free(str);
     }
 
     fn compress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []i32) !void {
@@ -503,7 +509,7 @@ pub const RenderedFile = struct {
     }
 
     fn compress_iters(self: Self, iters: []i32, writer: File.Writer) !void {
-        var obuf = try self.arena.alloc(u8, 4096);
+        var obuf = try self.alloc.alloc(u8, 4096); defer self.alloc.free(obuf);
 
         var zstr : zlib.z_stream = undefined;
         std.mem.set(u8, @ptrCast([*]u8, &zstr)[0..@sizeOf(zlib.z_stream)], 0);
@@ -554,8 +560,8 @@ pub const RenderedFile = struct {
 /////////////////
 
 fn run_test(comptime callable: anytype) !void {
-    // const alloc = std.testing.allocator;
-    const alloc = std.heap.page_allocator;
+    const alloc = std.testing.allocator;
+    // const alloc = std.heap.page_allocator;
     var storage = try mandel.MandelStorage.init(alloc, 128);
     defer storage.deinit();
     var params = try mandel.Params.init(alloc);

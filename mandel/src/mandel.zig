@@ -14,6 +14,8 @@ const XY = boxfill.XY;
 
 const rb = @import("rb.zig");
 
+var arena_instance = std.heap.ArenaAllocator.init(std.heap.raw_c_allocator);
+
 pub const Params = struct {
     sx: u32,
     sy: u32,
@@ -79,8 +81,7 @@ pub const Params = struct {
         var parser = std.json.Parser.init(alloc, false);
         defer parser.deinit();
         // try json.stringify(self, .{}, file.reader());
-        var input = try alloc.alloc(u8, 1024);
-        defer alloc.free(input);
+        var input = try alloc.alloc(u8, 1024); defer alloc.free(input);
         var size = try file.reader().readAll(input);
         var text = input[0..size];
         std.debug.print("text = {s}\n", .{text});
@@ -128,7 +129,7 @@ pub const Params = struct {
             // reference copy
             fys: []T,
 
-            pub fn calculate(self: Self, stop: *std.atomic.Atomic(bool)) !void {
+            pub fn calculate(self: Self, stop: *std.atomic.Atomic(bool)) !bool {
                 const rectSize = self.rectSize;
                 const data = self.data;
 
@@ -177,6 +178,7 @@ pub const Params = struct {
                     const perc = recalc * 16 / all;
                     std.debug.print("{s}", .{".123456789ABCDEF="[perc..perc+1]});
                 }
+                return recalc > 0;
             }
         };
 
@@ -190,8 +192,6 @@ pub const Params = struct {
 
             pub fn init(alloc: Allocator, params: Params, storage: *MandelStorage,
                         calcSize : u32, xoffs : i32, yoffs : i32) !Self {
-                // var params: Params = selfOrig;
-
                 var fxs = std.ArrayList(T).init(alloc);
                 var fys = std.ArrayList(T).init(alloc);
 
@@ -210,7 +210,6 @@ pub const Params = struct {
                 std.debug.print("segs = {}, span = {}, div = {}, step = {}\n", .{ SEGS, pspan, div, step });
                 // per-pixel step
                 const floatStep = BigFloatType.fromFloat(step);
-                // const halfBlockStep = BigFloatType.fromFloat(pspan) >> 1;
 
                 var layer = try storage.ensure(params.zoom, blockSize);
                 var layerM1 = if (params.zoom > 0) storage.get(params.zoom - 1) else null;
@@ -242,8 +241,7 @@ pub const Params = struct {
 
                 // get a calculation order, for quickest results
                 // in the interesting area of the center
-                var xys: []XY = try alloc.alloc(XY, SEGS*SEGS);
-                defer alloc.free(xys);
+                var xys: []XY = try alloc.alloc(XY, SEGS*SEGS); defer alloc.free(xys);
                 boxfill.fillBoxesInnerToOuter(xys, SEGS);
 
                 // per block...
@@ -295,46 +293,6 @@ pub const Params = struct {
     }
 };
 
-/// Coordinate for marking the edge of a MandelViewpoint.
-// pub const BigCoord = struct {
-//     const Self = @This();
-
-//     // always copies
-//     x: []u64,
-//     y: []u64,
-
-// pub fn init(comptime IntType: type, alloc: Allocator, xi : IntType, yi: IntType) !Self {
-//     return .{
-//         .x = try alloc.dupe(u64, bignum.intWords(IntType, xi)),
-//         .y = try alloc.dupe(u64, bignum.intWords(IntType, yi)),
-//     };
-// }
-
-//     pub fn hash(self: Self) u64 {
-//         var hasher = std.hash.Wyhash.init(0);
-//         // .Deep means, go into the slice, rather than taking the address
-//         std.hash.autoHashStrat(&hasher, self.x, .Deep);
-//         std.hash.autoHashStrat(&hasher, self.y, .Deep);
-//         const h = hasher.final();
-//         return h;
-//     }
-//     pub fn eql(self: BigCoord, other: BigCoord) bool {
-//         return std.mem.eql(u64, self.x, other.x) and std.mem.eql(u64, self.y, other.y);
-//     }
-
-//     pub fn to_string(self: BigCoord, alloc: Allocator) ![]u8 {
-//         var list = std.ArrayList(u8).init(alloc);
-//         try list.appendSlice("[");
-//         var xs = try bignum.printBigArray(alloc, self.x); defer alloc.free(xs);
-//         try list.appendSlice(xs);
-//         try list.appendSlice(", ");
-//         var ys = try bignum.printBigArray(alloc, self.y); defer alloc.free(ys);
-//         try list.appendSlice(ys);
-//         try list.appendSlice("]");
-//         return list.toOwnedSlice();
-//     }
-// };
-
 pub const BigCoord = struct {
     const Self = @This();
 
@@ -377,15 +335,14 @@ pub const BlockData = struct {
     /// iter counts (0 if not calculated, +ve = iter count, -ve = last failed count)
     iters: []i32,
 
-    pub fn init(self: *Self, alloc: Allocator, sz: u16) !void {
+    pub fn init(self: *Self, arena: Allocator, sz: u16) !void {
         self.sz = sz;
-        self.iters = try alloc.alloc(i32, @intCast(u32, sz) * sz);
+        self.iters = try arena.alloc(i32, @intCast(u32, sz) * sz);
         std.mem.set(i32, self.iters, 0);
     }
 
-    pub fn deinit(self: *Self, alloc: Allocator) void {
-        alloc.free(self.iters);
-        // coord not owned
+    pub fn deinit(self: *Self, arena: Allocator) void {
+        arena.free(self.iters);
     }
 
     pub inline fn iter(self: Self, x: u32, y: u32) i32 {
@@ -408,27 +365,28 @@ pub const MandelLayer = struct {
         pub fn eql(_: anytype, a: BigCoord, b: BigCoord) bool { return a.eql(b); }
     }, 80);
 
-    alloc: Allocator,
+    arena: Allocator,
     zoom: u16,
     /// block size (pixels)
     blockSize: u16,
     /// cache of blocks
     blocks: BlockMap,
 
-    pub fn init(self: *Self, alloc: Allocator, zoom: u16, blockSize: u16) !void {
-        self.alloc = alloc;
+    pub fn init(self: *Self, zoom: u16, blockSize: u16) !void {
+        // self.arena = arena_instance.allocator();
+        self.arena = std.heap.page_allocator;
         self.zoom = zoom;
         self.blockSize = blockSize;
-        self.blocks = BlockMap.init(alloc);
+        self.blocks = BlockMap.init(self.arena);
     }
 
     pub fn deinit(self: *Self) void {
-        {
+        while (true) {
             var it = self.blocks.iterator();
-            while (it.next()) |ent| {
-                // self.alloc.destroy(ent.key_ptr);
-                ent.value_ptr.*.deinit(self.alloc);
-            }
+            var ent = it.next();
+            if (ent == null) break;
+            ent.?.value_ptr.*.deinit(self.arena);
+            _ = self.blocks.remove(ent.?.key_ptr.*);
         }
         self.blocks.clearAndFree();
         self.blocks.deinit();
@@ -436,20 +394,6 @@ pub const MandelLayer = struct {
 
     /// Get the block
     pub fn get(self: Self, coord: BigCoord) ?*BlockData {
-        // var c = coord;
-        // var i : u11 = 0;
-        // var m : i1024 = 0;
-        // while (i < 1024) {
-        //     var blockPtr = self.blocks.get(c);
-        //     if (blockPtr != null) {
-        //         return blockPtr;
-        //     }
-        //     i += 64;
-        //     c.x &= ~m;
-        //     c.y &= ~m;
-        //     m = (m << 64) | 0xffff_ffff_ffff_ffff;
-        // }
-        // return null;
         return self.blocks.get(coord);
     }
 
@@ -462,13 +406,12 @@ pub const MandelLayer = struct {
             }
         }
         {
-            var cs = try coord.to_string(self.alloc); defer self.alloc.free(cs);
-            // std.debug.print("coord={s}\n", .{cs});
+            var cs = try coord.to_string(self.arena); defer self.arena.free(cs);
             var res = try self.blocks.getOrPut(coord);
             var blockPtr = res.value_ptr;
             if (!res.found_existing) {
-                blockPtr.* = try self.alloc.create(BlockData);
-                try blockPtr.*.init(self.alloc, self.blockSize);
+                blockPtr.* = try self.arena.create(BlockData);
+                try blockPtr.*.init(self.arena, self.blockSize);
             }
             return blockPtr.*;
         }
@@ -499,11 +442,20 @@ pub const MandelStorage = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        var it = self.layers.iterator();
-        while (it.next()) |ent| {
-            ent.value_ptr.*.deinit();
-            // self.alloc.destroy(ent.value_ptr);
+        // var it = self.layers.iterator();
+        // while (it.next()) |ent| {
+        //     ent.value_ptr.*.deinit();
+        //     // self.alloc.destroy(ent.value_ptr);
+        // }
+        while (true) {
+            var it = self.layers.iterator();
+            var ent = it.next();
+            if (ent == null) break;
+            ent.?.value_ptr.*.deinit();
+            self.alloc.destroy(ent.?.value_ptr.*);
+            _ = self.layers.remove(ent.?.key_ptr.*);
         }
+
         self.layers.clearAndFree();
         self.layers.deinit();
     }
@@ -518,9 +470,18 @@ pub const MandelStorage = struct {
         if (!gop.found_existing) {
             std.debug.print("new zoom level layer {}\n", .{zoom});
             layer.* = try self.alloc.create(MandelLayer);
-            try layer.*.init(self.alloc, zoom, sz);
+            try layer.*.init(zoom, sz);
         }
         return layer.*;
+    }
+
+    pub fn remove(self: *Self, zoom: u16) void {
+        var layer = self.layers.get(zoom);
+        if (layer != null) {
+            _ = self.layers.remove(zoom);
+            layer.?.deinit();
+            self.alloc.destroy(layer.?);
+        }
     }
 
 };
