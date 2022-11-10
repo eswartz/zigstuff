@@ -39,9 +39,18 @@ pub const Params = struct {
         };
     }
 
-    pub fn deinit(self: *@This(), alloc: Allocator) void {
+    pub fn deinit(self: *Params, alloc: Allocator) void {
         alloc.free(self.cx);
         alloc.free(self.cy);
+    }
+
+    pub fn setCx(self: *Params, alloc: Allocator, str: []u8) void {
+        alloc.free(self.cx);
+        self.cx = str;
+    }
+    pub fn setCy(self: *Params, alloc: Allocator, str: []u8) void {
+        alloc.free(self.cy);
+        self.cy = str;
     }
 
     pub fn span(self: Params, calcSize : u32) bignum.NativeFloat {
@@ -76,7 +85,7 @@ pub const Params = struct {
         }, .{}, file.writer());
     }
 
-    pub fn readConfig(self: *Params, alloc: Allocator, path: []const u8) !void {
+    pub fn loadConfig(self: *Params, alloc: Allocator, path: []const u8) !void {
         var file = try std.fs.cwd().openFile(path, .{});
         var parser = std.json.Parser.init(alloc, false);
         defer parser.deinit();
@@ -87,17 +96,13 @@ pub const Params = struct {
         std.debug.print("text = {s}\n", .{text});
 
         var tree = try parser.parse(text);
-        // self.*.cx = try parseHexFloat(bignum.NativeFloat, tree.root.Object.get("cx").?.String);
-        // self.*.cy = try parseHexFloat(bignum.NativeFloat, tree.root.Object.get("cy").?.String);
-        alloc.free(self.*.cx);
-        alloc.free(self.*.cy);
-        self.*.cx = try alloc.dupe(u8, tree.root.Object.get("cx").?.String);
-        self.*.cy = try alloc.dupe(u8, tree.root.Object.get("cy").?.String);
-        self.*.zoom = @intCast(u16, tree.root.Object.get("zoom").?.Integer);
-        self.*.iters = @intCast(u32, tree.root.Object.get("iters").?.Integer);
-        self.*.magShift = @intCast(u5, tree.root.Object.get("magShift").?.Integer);
+        self.setCx(alloc, try alloc.dupe(u8, tree.root.Object.get("cx").?.String));
+        self.setCy(alloc, try alloc.dupe(u8, tree.root.Object.get("cy").?.String));
+        self.zoom = @intCast(u16, tree.root.Object.get("zoom").?.Integer);
+        self.iters = @intCast(u32, tree.root.Object.get("iters").?.Integer);
+        self.magShift = @intCast(u5, tree.root.Object.get("magShift").?.Integer);
         const jsonBits = tree.root.Object.get("words");
-        self.*.words = if (jsonBits) |j| @intCast(u16, j.Integer) else self.*.getDefaultIntSize();
+        self.words = if (jsonBits) |j| @intCast(u16, j.Integer) else self.getDefaultIntSize();
         // self.*.sx = tree.root.Object.get("sx").?.Float;
         // self.*.sy = tree.root.Object.get("sy").?.Float;
     }

@@ -2,6 +2,12 @@ const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
+const cimports = @import("cimports.zig");
+const gmp = cimports.gmp;
+const zlib = cimports.zlib;
+
+const config = @import("config.zig");
+
 const bignum = @import("bignum.zig");
 const Mandel = bignum.Mandel;
 
@@ -9,10 +15,6 @@ const mandel = @import("mandel.zig");
 const Params = mandel.Params;
 
 const File = std.fs.File;
-
-const cimports = @import("cimports.zig");
-const gmp = cimports.gmp;
-const zlib = cimports.zlib;
 
 pub const DecimalMath = struct {
     const Self = @This();
@@ -37,17 +39,17 @@ pub const DecimalMath = struct {
 
         // scale to fixed int size, where the top 8 bits are the integral part
         gmp.mpf_mul_2exp(&mpf, &mpf, bits - 8);
-        {
-            var exp : gmp.mp_exp_t = undefined;
-            const strptr = gmp.mpf_get_str(null, &exp, 16, 0, &mpf);
-            const slen = if (exp != 0 and strptr != null) strlen(strptr) else 0;
-            if (exp == 0)
-                std.debug.print("xx> 0\n", .{})
-            else if (exp < slen)
-                std.debug.print("xx> {s}.{s}\n", .{strptr[0..@intCast(usize, exp)], strptr[@intCast(usize, exp)+1..slen]})
-            else
-                std.debug.print("xx> {s}.0+\n", .{strptr[0..slen]});
-        }
+        // {
+        //     var exp : gmp.mp_exp_t = undefined;
+        //     const strptr = gmp.mpf_get_str(null, &exp, 16, 0, &mpf);
+        //     const slen = if (exp != 0 and strptr != null) strlen(strptr) else 0;
+        //     if (exp == 0)
+        //         std.debug.print("xx> 0\n", .{})
+        //     else if (exp < slen)
+        //         std.debug.print("xx> {s}.{s}\n", .{strptr[0..@intCast(usize, exp)], strptr[@intCast(usize, exp)+1..slen]})
+        //     else
+        //         std.debug.print("xx> {s}.0+\n", .{strptr[0..slen]});
+        // }
 
         // make into int
         var mpz : gmp.mpz_t = undefined;
@@ -333,8 +335,8 @@ pub const RenderedFile = struct {
 
         var bits = self.params.getDefaultIntSize() << 6;
         self.params.words = bits >> 6;
-        self.params.cx = try DecimalMath.parse_decimal(self.storage.alloc, cxStr, bits);
-        self.params.cy = try DecimalMath.parse_decimal(self.storage.alloc, cyStr, bits);
+        self.params.setCx(self.storage.alloc, try DecimalMath.parse_decimal(self.storage.alloc, cxStr, config.MAXBITS));
+        self.params.setCy(self.storage.alloc, try DecimalMath.parse_decimal(self.storage.alloc, cyStr, config.MAXBITS));
 
         {
             const minItersStr = try self.read_string(reader); defer self.alloc.free(minItersStr);
@@ -449,11 +451,10 @@ pub const RenderedFile = struct {
         var writer = file.writer();
         try self.write_string_free(writer, try self.alloc.dupe(u8, "jmandel_1.1"));
 
-        // var bits = self.params.words << 6;
-        var bits = self.params.getDefaultIntSize() << 6;
+        // var bits = self.params.getDefaultIntSize() << 6;
 
-        const cxStr = try DecimalMath.write_decimal(self.alloc, self.params.cx, bits);
-        const cyStr = try DecimalMath.write_decimal(self.alloc, self.params.cy, bits);
+        const cxStr = try DecimalMath.write_decimal(self.alloc, self.params.cx, config.MAXBITS);
+        const cyStr = try DecimalMath.write_decimal(self.alloc, self.params.cy, config.MAXBITS);
         try self.write_string_free(writer, cxStr);
         try self.write_string_free(writer, cyStr);
 

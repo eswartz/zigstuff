@@ -143,29 +143,41 @@ pub const Viewer = struct {
         };
     }
 
-    fn render(self: *Self) !bool {
-        return try switch (self.params.words) {
-            inline 1...bignum.MAXWORDS => |v| self.renderForParams(bignum.BigInt(64 * v)),
-            else => self.renderForParams(bignum.BigInt(64 * bignum.MAXWORDS)),
-        };
-    }
-
     pub fn run(self: *Self) !void {
         if (self.autoSave) {
-            try self.params.readConfig(self.alloc, self.saveFile);
+            try self.params.loadConfig(self.alloc, self.saveFile);
+            var rootParams = self.params;
+            rootParams.cx = try self.alloc.dupe(u8, self.params.cx);
+            rootParams.cy = try self.alloc.dupe(u8, self.params.cy);
             self.params.zoom = self.autoFrom;
             self.params.magShift = 0;
+            self.params.words = self.params.getDefaultIntSize();
 
             while (true) {
-                _ = try self.loadData();
-                const changed = try self.render();
-
-                _ = try self.handleInput();
-                if (self.exit) {
-                    return;
+                // load any previous data
+                if (try self.loadData()) {
+                    // restore guiding coords
+                    self.params.setCx(self.alloc, try self.alloc.dupe(u8, rootParams.cx));
+                    self.params.setCy(self.alloc, try self.alloc.dupe(u8, rootParams.cy));
                 }
 
-                if (!changed) {
+                const changed = try self.recalc();
+
+                while (true) {
+                    const cont = try self.handleInput();
+                    if (self.exit)
+                        return;
+                    if (!self.pause)
+                        break;
+                    if (cont) {
+                        try self.render();
+                    }
+                }
+
+                if (self.pause) {
+                    std.debug.print("Paused, not saving\n", .{});
+                    continue;
+                } if (!changed) {
                     std.debug.print("No changes for {} of {}\n", .{ self.params.zoom, self.autoTo });
                 } else {
                     std.debug.print("Saving {} of {}\n", .{ self.params.zoom, self.autoTo });
@@ -192,13 +204,11 @@ pub const Viewer = struct {
             }
         } else {
             while (!self.exit) {
-                _ = try self.render();
+                _ = try self.recalc();
 
-                if (self.pause) {
-                    while (!self.exit) {
-                        if (try self.handleInput())
-                            break;
-                    }
+                while (!self.exit) {
+                    if (try self.handleInput())
+                        break;
                 }
             }
         }
@@ -240,8 +250,13 @@ pub const Viewer = struct {
         }
     }
 
-    fn clearParamsT(self: *Self, calcSize : u32, comptime BigIntType : type) !void {
-        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage,
+    fn clearParamsT(self: *Self, comptime BigIntType : type, zoom : i16) !void {
+        const calcSize = self.getCalcSize();
+        var params = self.params;
+        if (params.zoom == 0 and zoom < 0) return;
+
+        params.zoom = @intCast(u16, @intCast(i16, params.zoom) + zoom);
+        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, params, &self.storage,
             calcSize, 0, 0,
         );
         defer workLoad.deinit(self.alloc);
@@ -251,14 +266,45 @@ pub const Viewer = struct {
         }
     }
 
-    fn clearParams(self: *Self, calcSize : u32) !void {
+    fn clearParams(self: *Self) !void {
+        var i : i16 = -1;
+        while (i < 2) : (i += 1) {
+            try switch (self.params.words) {
+                inline 1...config.MAXWORDS => |v| self.clearParamsT(bignum.BigInt(64 * v), i),
+                else => self.clearParamsT(bignum.BigInt(64 * config.MAXWORDS), i),
+            };
+        }
+    }
+
+    fn getCalcSize(self: Self) u32 {
+        var wx : c_int = undefined;
+        var wy : c_int = undefined;
+        _ = sdl2.SDL_GetWindowSize(self.window, &wx, &wy);
+        const calcSize = @intCast(u32, std.math.max(wx, wy));
+        return calcSize;
+    }
+
+    fn renderT(self: *Self, comptime BigIntType: type) !void {
+        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage,
+                self.getCalcSize(), 0, 0,
+        );
+        defer workLoad.deinit(self.alloc);
+
+        for (workLoad.blocks) |block| {
+            self.renderBlock(block.px, block.py, block.data);
+        }
+
+        _ = sdl2.SDL_RenderPresent(self.renderer);
+    }
+
+    fn render(self: *Self) !void {
         try switch (self.params.words) {
-            inline 1...bignum.MAXWORDS => |v| self.clearParamsT(calcSize, bignum.BigInt(64 * v)),
-            else => self.clearParamsT(calcSize, bignum.BigInt(64 * bignum.MAXWORDS)),
+            inline 1...bignum.MAXWORDS => |v| self.renderT(bignum.BigInt(64 * v)),
+            else => self.renderT(bignum.BigInt(64 * config.MAXWORDS)),
         };
     }
 
-    fn renderForParams(self: *Self, comptime BigIntType: type) !bool {
+    fn recalcT(self: *Self, comptime BigIntType: type) !bool {
         std.debug.print("Rendering with BigInt({s}) at x= {s}, y= {s}, zoom= {}, iters= {}...\n", .{ @typeName(BigIntType), self.params.cx, self.params.cy, self.params.zoom, self.params.iters });
 
         _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 0);
@@ -267,10 +313,7 @@ pub const Viewer = struct {
         var timer = try std.time.Timer.start();
         const timeStart = timer.lap();
 
-        var wx : c_int = undefined;
-        var wy : c_int = undefined;
-        _ = sdl2.SDL_GetWindowSize(self.window, &wx, &wy);
-        const calcSize = @intCast(u32, std.math.max(wx, wy));
+        const calcSize = self.getCalcSize();
 
         var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage,
                 calcSize, 0, 0,
@@ -363,9 +406,6 @@ pub const Viewer = struct {
                         if (blocksLeft.load(.Acquire) == 0) {
                             done = true;
                             std.debug.print("time for calculation   = {d}s\n", .{@intToFloat(f64, (timer.lap() - timeStart)) / 1.0e9});
-                            if (self.autoSave) {
-                                return blocksChanged.load(.SeqCst) > 0;
-                            }
                         }
                         break;
                     }
@@ -379,18 +419,20 @@ pub const Viewer = struct {
             }
         }
 
-        if (!self.exit) {
-            while (!cont) {
-                cont = try self.handleInput();
-            }
-        }
-
+        // clean up
         stop.store(true, .Unordered);
         for (threads[0..NTHREADS]) |thread| {
             thread.join();
         }
 
         return blocksChanged.load(.SeqCst) > 0;
+    }
+
+    fn recalc(self: *Self) !bool {
+        return try switch (self.params.words) {
+            inline 1...config.MAXWORDS => |v| self.recalcT(bignum.BigInt(64 * v)),
+            else => self.recalcT(bignum.BigInt(64 * config.MAXWORDS)),
+        };
     }
 
     fn setPause(self: *Self, p: bool) void {
@@ -431,31 +473,57 @@ pub const Viewer = struct {
     }
 
     fn handleInput(self: *Self) !bool {
-        var wx : c_int = undefined;
-        var wy : c_int = undefined;
-        _ = sdl2.SDL_GetWindowSize(self.window, &wx, &wy);
-        const calcSize = @intCast(u32, std.math.max(wx, wy));
         const blockSize = self.storage.blockSize;
+
+        var minShift : u5 = std.math.min(1, @intCast(u5, std.math.log2_int(u32, @intCast(u32, self.getCalcSize()) / blockSize)));
+
         var ps = &self.params;
         var event: sdl2.SDL_Event = undefined;
         var cont = false;
+
         while (sdl2.SDL_WaitEventTimeout(&event, 10) != 0) {
             var words = ps.words;
-            var span = ps.span(calcSize);
+            var span = ps.span(self.getCalcSize());
             if (event.type == sdl2.SDL_QUIT) {
                 self.exit = true;
                 std.debug.print("Cancelling...\n", .{});
                 cont = true;
             } else if (event.type == sdl2.SDL_KEYDOWN) {
                 var ke = @ptrCast(*sdl2.SDL_KeyboardEvent, &event);
+                const shiftAmt: u5 = if ((ke.keysym.mod & sdl2.KMOD_LSHIFT) != 0) (minShift + 3) else minShift;
+
+                // std.debug.print("Min shift= {}, shift = {}, span = {}\n", .{ minShift, shiftAmt, @floatCast(f64, span) });
                 cont = true;
 
                 var shift = (ke.state & sdl2.KMOD_SHIFT) != 0;
-                var minShift : u5 = std.math.min(1, @intCast(u5, std.math.log2_int(u32, @intCast(u32, std.math.min(wx, wy)) / blockSize)));
-                const shiftAmt: u5 = if ((ke.keysym.mod & sdl2.KMOD_LSHIFT) != 0) (minShift + 3) else minShift;
-                std.debug.print("Min shift= {}, shift = {}, span = {}\n", .{ minShift, shiftAmt, @floatCast(f64, span) });
+                var ctrl = (ke.state & sdl2.KMOD_CTRL) != 0;
                 _ = switch (ke.keysym.sym) {
                     sdl2.SDLK_ESCAPE => { self.exit = true; std.debug.print("Cancelling...\n", .{}); },
+                    sdl2.SDLK_F1, sdl2.SDLK_SLASH, sdl2.SDLK_QUESTION => {
+                        std.debug.print(
+                            \\ Help:
+                            \\   ?/F1: help
+                            \\   Esc: exit
+                            \\   Pause: pause rendering and autosaving
+                            \\   Space: re-render without calculation
+                            \\   +: zoom in
+                            \\   -: zoom out
+                            \\   pgup: +50 iterations (shift: +250)
+                            \\   pgdn: -50 iterations (shift: -250)
+                            \\   up/down/left/right: scroll view half a page, shift+: scroll 1/8 page
+                            \\   0-9: sample 2^n pixels
+                            \\   [: -64 bits precision
+                            \\   ]: +64 bits precision
+                            \\   ctrl-a: align view to precision
+                            \\   ctrl-r: clear render at (-1, 0, 1) zoom levels
+                            \\   F5: save .json params
+                            \\   F9: load .json params
+                            \\   F4: save .dat file
+                            \\   F8: load .dat file
+                            , .{});
+                        cont = false;
+                    },
+                    sdl2.SDLK_SPACE => try self.render(),
                     sdl2.SDLK_PLUS, sdl2.SDLK_EQUALS => ps.zoom += 1,
                     sdl2.SDLK_MINUS => ps.zoom = if (ps.zoom > 1) ps.zoom - 1 else 0,
                     sdl2.SDLK_UP => try bignum.faddShift(self.alloc, &ps.cy, words, -span, shiftAmt),
@@ -466,17 +534,17 @@ pub const Viewer = struct {
                     sdl2.SDLK_PAGEUP => ps.iters += if (shift) @intCast(u32, 250) else @intCast(u32, 50),
                     sdl2.SDLK_LEFTBRACKET => ps.words = if (words > 1) words - 1 else 1,
                     sdl2.SDLK_RIGHTBRACKET => ps.words += 1,
-                    sdl2.SDLK_SPACE => {
+                    sdl2.SDLK_a => if (ctrl) {
                         try bignum.falign(self.alloc, &ps.cx, words);
                         try bignum.falign(self.alloc, &ps.cy, words);
                     },
-                    sdl2.SDLK_r => try self.clearParams(calcSize),
+                    sdl2.SDLK_r => if (ctrl) try self.clearParams(),
                     sdl2.SDLK_F5 => {
                         try ps.writeConfig(self.alloc, self.saveFile);
                         cont = false;
                     },
                     sdl2.SDLK_F9 => {
-                        if (ps.readConfig(self.alloc, self.saveFile)) {} else |err| {
+                        if (ps.loadConfig(self.alloc, self.saveFile)) {} else |err| {
                             std.debug.print("Failed to load: {}\n", .{err});
                             cont = false;
                         }
