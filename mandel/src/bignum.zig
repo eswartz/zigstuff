@@ -207,13 +207,14 @@ pub fn printBig(alloc: Allocator, comptime IntType: type, x: IntType) ![]u8 {
 }
 
 pub fn BigFixedFloat(comptime BigFloatType: type, comptime intBits: u16) type {
-    const mantissaBits = @typeInfo(BigFloatType).Int.bits - intBits;
     // _ = mantissaBits;
     return struct {
+        pub const Repr = BigFloatType;
+        pub const mantissaBits = @typeInfo(BigFloatType).Int.bits - intBits;
         /// Convert 'v' to a big float.
         /// Unfortunately some bigint/float operations aren't handled yet,
         /// so we need to do this manually
-        pub fn fromFloat(v: NativeFloat) BigFloatType {
+        pub fn fromFloat(v: NativeFloat) Repr {
             // whoops, LLVM ERROR...
             // return @floatToInt(BigFloatType, av);
 
@@ -229,7 +230,7 @@ pub fn BigFixedFloat(comptime BigFloatType: type, comptime intBits: u16) type {
             var av: NativeFloat = std.math.fabs(v);
             const fexp = std.math.frexp(av);
             _ = fexp;
-            var f: BigFloatType = @as(BigFloatType, @floatToInt(NativeInt, av));
+            var f: Repr = @as(Repr, @floatToInt(NativeInt, av));
             var i: isize = mantissaBits;
             while (i > 0) : (i -= 1) {
                 av -= @trunc(av);
@@ -237,46 +238,6 @@ pub fn BigFixedFloat(comptime BigFloatType: type, comptime intBits: u16) type {
                 f = if (av >= 1.0) (f << 1) | 1 else f << 1;
             }
             return if (v < 0) -f else f;
-        }
-
-        const BigFloat2 = BigInt(@typeInfo(BigFloatType).Int.bits * 2);
-
-        pub fn mul(x: BigFloatType, y: BigFloatType) BigFloatType {
-            const ps = (@as(BigFloat2, x) * @as(BigFloat2, y)) >> mantissaBits;
-            return @intCast(BigFloatType, ps);
-        }
-
-        /// Calculate the intersection of a coordinate (creal,cimag) in the
-        /// Mandelbrot set.  If it is not in the set, return a positive
-        /// integer indicating the iteration count before exit.
-        /// Else, return a negative number indicating the negative of how
-        /// many iterations were attempted.
-        pub fn calcMandelbrot(creal: BigFloatType, cimag: BigFloatType, maxIters: u32) i32 {
-            const four: BigFloatType = fromFloat(4.0);
-            var iters: i32 = 0;
-            var real = creal;
-            var imag = cimag;
-
-            while (true) {
-                var realsq = mul(real, real);
-                var imagsq = mul(imag, imag);
-                if (realsq + imagsq >= four)
-                    break;
-                if (iters >= maxIters) {
-                    return -iters;
-                }
-                var temp = mul(real, imag);
-
-                // r = (r'*r' - i*i) + cr
-                var rriir = (realsq - imagsq);
-                real = rriir +% creal;
-                // i = (r'*i' * 2) + ci
-                var ri2 = (temp + temp);
-                imag = ri2 +% cimag;
-
-                iters += 1;
-            }
-            return iters + 1;
         }
     };
 }
@@ -335,43 +296,4 @@ test "repr256" {
         f /= 2.0;
         exp >>= 1;
     }
-}
-
-test "mb256_0" {
-    const BigInt256 = BigInt(256);
-    const m = BigFixedFloat(BigInt256, 8);
-    {
-        const x0 = m.fromFloat(-1.5);
-        const y0 = m.fromFloat(1.5);
-        try testing.expectEqual(@as(i32, 1), m.calcMandelbrot(x0, y0, 100));
-    }
-    {
-        const x0 = m.fromFloat(-1.25);
-        const y0 = m.fromFloat(0.2);
-        try testing.expectEqual(@as(i32, 11), m.calcMandelbrot(x0, y0, 100));
-    }
-
-    const cx = -1.25;
-    const cy = 0.2;
-
-    const XS = 80;
-    const YS = 32;
-    const xrange = 0.1 / (XS + 0.0);
-    const yrange = 0.1 / (YS + 0.0);
-
-    var itersTot: i64 = 0;
-    std.debug.print("\n", .{});
-    var py: u32 = 0;
-    while (py < YS) : (py += 1) {
-        var px: u32 = 0;
-        while (px < XS) : (px += 1) {
-            const fx = m.fromFloat(cx + @intToFloat(NativeFloat, px) * xrange);
-            const fy = m.fromFloat(cy + @intToFloat(NativeFloat, py) * yrange);
-            const iters = m.calcMandelbrot(fx, fy, 256);
-            itersTot += if (iters > 0) iters else -iters;
-            std.debug.print("{c}", .{if (iters >= 0) "-ABCDEFGHIJKLMNOPQRSTUVWXYZ"[@intCast(u32, iters) % 26] else ' '});
-        }
-        std.debug.print("\n", .{});
-    }
-    try testing.expectEqual(@as(i64, 98465), itersTot);
 }

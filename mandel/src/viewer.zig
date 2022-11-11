@@ -11,8 +11,10 @@ const Mandel = bignum.Mandel;
 const boxfill = @import("boxfill.zig");
 const XY = boxfill.XY;
 
-const mandel = @import("mandel.zig");
-const Params = mandel.Params;
+const algo = @import("algo.zig");
+const MandelParams = algo.Params;
+const cache = @import("cache.zig");
+const MandelStorage = cache.MandelStorage;
 
 const cimports = @import("cimports.zig");
 const sdl2 = cimports.sdl2;
@@ -25,12 +27,13 @@ pub const Viewer = struct {
     alloc: Allocator,
     window: *sdl2.SDL_Window,
     renderer: *sdl2.SDL_Renderer,
-    params: Params,
+    params: MandelParams,
     exit: bool,
     pause: bool,
     saveFile : []u8,
     dataFile : []u8,
-    storage : mandel.MandelStorage,
+    storage : MandelStorage,
+    updateMetadata : bool,
     autoSave : bool,
     autoFrom : u16,
     autoTo : u16,
@@ -40,6 +43,7 @@ pub const Viewer = struct {
         var frameSize : u32 = 1024;
         var blockSize : u16 = 128;
 
+        var updateMetadata : bool = false;
         var autoFrom : u16 = 0;
         var autoTo : u16 = 0;
         var saveName : []u8 = "";
@@ -83,6 +87,8 @@ pub const Viewer = struct {
                     } else {
                         return error.InvalidRange;
                     }
+                } else if (std.mem.eql(u8, arg, "-u")) {
+                    updateMetadata = true;
                 } else if (arg[0] != '-') {
                     if (saveName.len == 0)
                         saveName = try alloc.dupe(u8, arg)
@@ -94,15 +100,19 @@ pub const Viewer = struct {
             }
         }
 
+        if (updateMetadata and autoFrom >= autoTo) {
+            return error.NeedAutosave;
+        }
+
         if (blockSize > winSize) blockSize = @intCast(u16, winSize);
         if (winSize > frameSize) frameSize = @intCast(u32, winSize);
 
         if (saveName.len == 0) saveName = try alloc.dupe(u8, "save.json");
         if (dataName.len == 0) dataName = try alloc.dupe(u8, "data/zoom10_000.dat");
 
-        var storage = try mandel.MandelStorage.init(alloc, blockSize);
+        var store = try MandelStorage.init(alloc, blockSize);
 
-        var params = try Params.init(alloc);
+        var params = try MandelParams.init(alloc);
 
         params.sx = frameSize;
         params.sy = frameSize;
@@ -136,7 +146,8 @@ pub const Viewer = struct {
             .pause = false,
             .saveFile = saveName,
             .dataFile = dataName,
-            .storage = storage,
+            .storage = store,
+            .updateMetadata = updateMetadata,
             .autoSave = autoFrom < autoTo,
             .autoFrom = autoFrom,
             .autoTo = autoTo,
@@ -159,6 +170,7 @@ pub const Viewer = struct {
                     // restore guiding coords
                     self.params.setCx(self.alloc, try self.alloc.dupe(u8, rootParams.cx));
                     self.params.setCy(self.alloc, try self.alloc.dupe(u8, rootParams.cy));
+                    try self.render();
                 }
 
                 const changed = try self.recalc();
@@ -178,7 +190,7 @@ pub const Viewer = struct {
                 if (self.pause) {
                     std.debug.print("Paused, not saving\n", .{});
                     continue;
-                } if (!changed) {
+                } if (!self.updateMetadata and !changed) {
                     std.debug.print("No changes for {} of {}\n", .{ self.params.zoom, self.autoTo });
                 } else {
                     std.debug.print("Saving {} of {}\n", .{ self.params.zoom, self.autoTo });
@@ -189,9 +201,6 @@ pub const Viewer = struct {
                     }
                 }
 
-                if (self.params.zoom > 0) {
-                    self.storage.remove(self.params.zoom - 1);
-                }
                 self.params.zoom += 1;
                 if (self.params.zoom <= self.autoTo) {
                     self.params.words = self.params.getDefaultIntSize();
@@ -221,7 +230,7 @@ pub const Viewer = struct {
         sdl2.SDL_DestroyWindow(self.window);
     }
 
-    fn renderBlock(self: Self, bpx: u32, bpy: u32, block: *mandel.BlockData) void {
+    fn renderBlock(self: Self, bpx: u32, bpy: u32, block: *cache.BlockData) void {
         var rect : sdl2.SDL_FRect = undefined;
 
         const rectSize: u32 = @as(u32, 1) << self.params.magShift;
@@ -257,7 +266,7 @@ pub const Viewer = struct {
         if (params.zoom == 0 and zoom < 0) return;
 
         params.zoom = @intCast(u16, @intCast(i16, params.zoom) + zoom);
-        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, params, &self.storage,
+        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.alloc, params, &self.storage,
             calcSize, 0, 0,
         );
         defer workLoad.deinit(self.alloc);
@@ -270,10 +279,11 @@ pub const Viewer = struct {
     fn clearParams(self: *Self) !void {
         var i : i16 = -1;
         while (i < 2) : (i += 1) {
-            try switch (self.params.words) {
-                inline 1...config.MAXWORDS => |v| self.clearParamsT(bignum.BigInt(64 * v), i),
-                else => self.clearParamsT(bignum.BigInt(64 * config.MAXWORDS), i),
-            };
+            // try switch (self.params.words) {
+            //     inline 1...config.MAXWORDS => |v| self.clearParamsT(bignum.BigInt(64 * v), i),
+            //     else => self.clearParamsT(bignum.BigInt(64 * config.MAXWORDS), i),
+            // };
+            try self.clearParamsT(bignum.BigInt(64 * config.MAXWORDS), i);
         }
     }
 
@@ -286,7 +296,7 @@ pub const Viewer = struct {
     }
 
     fn renderT(self: *Self, comptime BigIntType: type) !void {
-        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage,
+        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage,
                 self.getCalcSize(), 0, 0,
         );
         defer workLoad.deinit(self.alloc);
@@ -316,7 +326,7 @@ pub const Viewer = struct {
 
         const calcSize = self.getCalcSize();
 
-        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage,
+        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage,
                 calcSize, 0, 0,
         );
         defer workLoad.deinit(self.alloc);
@@ -372,7 +382,7 @@ pub const Viewer = struct {
         var blockIndex = std.atomic.Atomic(usize).init(0);
         var blocksLeft = std.atomic.Atomic(usize).init(workLoad.blocks.len);
 
-        const NTHREADS: usize = std.math.min(workLoad.blocks.len, std.math.min(config.MAXTHREADS, try std.Thread.getCpuCount()));
+        const NTHREADS: usize = 3 * std.math.min(workLoad.blocks.len, std.math.min(config.MAXTHREADS, try std.Thread.getCpuCount())) / 4;
         var threads: [256]std.Thread = undefined;
 
         var nt: u32 = 0;
@@ -494,7 +504,7 @@ pub const Viewer = struct {
                 const shiftAmt: u5 = if ((ke.keysym.mod & sdl2.KMOD_LSHIFT) != 0) (minShift + 3) else minShift;
 
                 // std.debug.print("Min shift= {}, shift = {}, span = {}\n", .{ minShift, shiftAmt, @floatCast(f64, span) });
-                cont = true;
+                cont = !self.autoSave;
 
                 var shift = (ke.state & sdl2.KMOD_SHIFT) != 0;
                 var ctrl = (ke.state & sdl2.KMOD_CTRL) != 0;
@@ -525,6 +535,7 @@ pub const Viewer = struct {
                         cont = false;
                     },
                     sdl2.SDLK_SPACE => try self.render(),
+                    sdl2.SDLK_RETURN => cont = true,
                     sdl2.SDLK_PLUS, sdl2.SDLK_EQUALS => ps.zoom += 1,
                     sdl2.SDLK_MINUS => ps.zoom = if (ps.zoom > 1) ps.zoom - 1 else 0,
                     sdl2.SDLK_UP => if (self.pause or !self.autoSave) try bignum.faddShift(self.alloc, &ps.cy, words, -span, shiftAmt),
@@ -551,7 +562,7 @@ pub const Viewer = struct {
                         }
                     },
                     sdl2.SDLK_F4 => cont = try self.saveData(),
-                    sdl2.SDLK_F8 => cont = try self.loadData(),
+                    sdl2.SDLK_F8 => { cont = try self.loadData(); try self.render(); },
                     sdl2.SDLK_PAUSE => { self.setPause(!self.pause); cont = true; },
                     '0'...'9' => |v| ps.magShift = @intCast(u5, v - '0'),
                     else => cont = false,

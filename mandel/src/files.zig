@@ -11,8 +11,10 @@ const config = @import("config.zig");
 const bignum = @import("bignum.zig");
 const Mandel = bignum.Mandel;
 
-const mandel = @import("mandel.zig");
-const Params = mandel.Params;
+const algo = @import("algo.zig");
+const MandelParams = algo.Params;
+const cache = @import("cache.zig");
+const MandelStorage = cache.MandelStorage;
 
 const File = std.fs.File;
 
@@ -39,17 +41,6 @@ pub const DecimalMath = struct {
 
         // scale to fixed int size, where the top 8 bits are the integral part
         gmp.mpf_mul_2exp(&mpf, &mpf, bits - 8);
-        // {
-        //     var exp : gmp.mp_exp_t = undefined;
-        //     const strptr = gmp.mpf_get_str(null, &exp, 16, 0, &mpf);
-        //     const slen = if (exp != 0 and strptr != null) strlen(strptr) else 0;
-        //     if (exp == 0)
-        //         std.debug.print("xx> 0\n", .{})
-        //     else if (exp < slen)
-        //         std.debug.print("xx> {s}.{s}\n", .{strptr[0..@intCast(usize, exp)], strptr[@intCast(usize, exp)+1..slen]})
-        //     else
-        //         std.debug.print("xx> {s}.0+\n", .{strptr[0..slen]});
-        // }
 
         // make into int
         var mpz : gmp.mpz_t = undefined;
@@ -77,11 +68,6 @@ pub const DecimalMath = struct {
 
         var list = std.ArrayList(u8).init(alloc);
         var i : usize = 0;
-        // if (istr[0] == '-') {
-        //     i += 1;
-        //     p -= 1;
-        //     try list.append('-');
-        // }
         const p = slen % 16;
         if (p != 0) {
             // partial first word, pad with zeroes
@@ -107,7 +93,7 @@ pub const DecimalMath = struct {
         }
 
         const bistr = list.toOwnedSlice();
-        std.debug.print("ii> {s}\n", .{bistr});
+        // std.debug.print("ii> {s}\n", .{bistr});
 
         return bistr;
     }
@@ -130,7 +116,7 @@ pub const DecimalMath = struct {
             data[words] = w;
             words += 1;
         }
-        std.debug.print("{} - {}\n", .{p, istr.len});
+        // std.debug.print("{} - {}\n", .{p, istr.len});
         if (p != istr.len) unreachable;
 
         var limbPtr = gmp.mpz_limbs_write(&mpz, words);
@@ -164,7 +150,7 @@ pub const DecimalMath = struct {
         var exp : gmp.mp_exp_t = undefined;
         var strptr = gmp.mpf_get_str(null, &exp, 10, 256, &mpf);
         const slen = strlen(strptr);
-        std.debug.print("xx> ({}){s}\n", .{exp, strptr[0..slen]});
+        // std.debug.print("xx> ({}){s}\n", .{exp, strptr[0..slen]});
 
         var list = std.ArrayList(u8).init(alloc);
         var i : usize = 0;
@@ -192,7 +178,7 @@ pub const DecimalMath = struct {
         }
 
         const bistr = try list.toOwnedSliceSentinel(0);
-        std.debug.print("dd> {s}\n", .{bistr});
+        // std.debug.print("dd> {s}\n", .{bistr});
         return bistr;
     }
 };
@@ -294,11 +280,11 @@ test "file decnums" {
 pub const RenderedFile = struct {
     const Self = @This();
 
-    params: *Params,
-    storage : *mandel.MandelStorage,
+    params: *MandelParams,
+    storage : *MandelStorage,
     alloc: Allocator,
 
-    pub fn init(params: *Params, storage: *mandel.MandelStorage) !Self {
+    pub fn init(params: *MandelParams, storage: *MandelStorage) !Self {
         return Self{
             .params = params,
             .storage = storage,
@@ -344,8 +330,9 @@ pub const RenderedFile = struct {
             _ = minIters;
         }
         {
-            const itersStr = try self.read_string(reader); defer self.alloc.free(itersStr);
-            self.params.iters = try std.fmt.parseInt(u32, itersStr, 10);
+            const maxItersStr = try self.read_string(reader); defer self.alloc.free(maxItersStr);
+            var maxIters = try std.fmt.parseInt(u32, maxItersStr, 10);
+            _ = maxIters;
         }
 
         const psxStr = try self.read_string(reader); defer self.alloc.free(psxStr);
@@ -403,7 +390,7 @@ pub const RenderedFile = struct {
 
     fn decompress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []const i32) !void {
         _ = psy;
-        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage, self.params.sx, 0, 0);
+        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage, self.params.sx, 0, 0);
         defer workLoad.deinit(self.storage.alloc);
 
         std.debug.print("iters={}, psx={}, psy={}\n", .{ iters.len, self.params.sx, self.params.sy });
@@ -451,7 +438,16 @@ pub const RenderedFile = struct {
         var writer = file.writer();
         try self.write_string_free(writer, try self.alloc.dupe(u8, "jmandel_1.1"));
 
-        // var bits = self.params.getDefaultIntSize() << 6;
+        const iters = try self.alloc.alloc(i32, self.params.sx * self.params.sy); defer self.alloc.free(iters);
+        std.mem.set(i32, iters, 0);
+
+        var minIters : u32 = undefined;
+        var maxIters : u32 = undefined;
+
+        try switch (self.params.words) {
+            inline 1...bignum.MAXWORDS => |w| self.compress_blocks(bignum.BigInt(w << 6), self.params.sx, self.params.sy, iters, &minIters, &maxIters),
+            else => unreachable,
+        };
 
         const cxStr = try DecimalMath.write_decimal(self.alloc, self.params.cx, config.MAXBITS);
         const cyStr = try DecimalMath.write_decimal(self.alloc, self.params.cy, config.MAXBITS);
@@ -460,19 +456,11 @@ pub const RenderedFile = struct {
 
         try self.write_string_free(writer, try std.fmt.allocPrint(self.alloc, "{}", .{ self.params.zoom }));
 
-        try self.write_string_free(writer, try std.fmt.allocPrint(self.alloc, "{}", .{ self.params.iters }));
-        try self.write_string_free(writer, try std.fmt.allocPrint(self.alloc, "{}", .{ self.params.iters }));
+        try self.write_string_free(writer, try std.fmt.allocPrint(self.alloc, "{}", .{ minIters }));
+        try self.write_string_free(writer, try std.fmt.allocPrint(self.alloc, "{}", .{ maxIters }));
 
         try self.write_string_free(writer, try std.fmt.allocPrint(self.alloc, "{}", .{ self.params.sx }));
         try self.write_string_free(writer, try std.fmt.allocPrint(self.alloc, "{}", .{ self.params.sy }));
-
-        const iters = try self.alloc.alloc(i32, self.params.sx * self.params.sy); defer self.alloc.free(iters);
-        std.mem.set(i32, iters, 0);
-
-        try switch (self.params.words) {
-            inline 1...bignum.MAXWORDS => |w| self.compress_blocks(bignum.BigInt(w << 6), self.params.sx, self.params.sy, iters),
-            else => unreachable,
-        };
 
         try self.compress_iters(iters, writer);
     }
@@ -483,12 +471,15 @@ pub const RenderedFile = struct {
         self.alloc.free(str);
     }
 
-    fn compress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []i32) !void {
+    fn compress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []i32, minIters: *u32, maxIters: *u32) !void {
         _ = psy;
-        var workLoad = try Params.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage, self.params.sx, 0, 0);
+        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage, self.params.sx, 0, 0);
         defer workLoad.deinit(self.storage.alloc);
 
         std.debug.print("iters={}, psx={}, psy={}\n", .{ iters.len, self.params.sx, self.params.sy });
+
+        minIters.* = std.math.maxInt(u32);
+        maxIters.* = 0;
 
         const ps = self.storage.blockSize;
         var c : u32 = 0;
@@ -503,6 +494,12 @@ pub const RenderedFile = struct {
                     const iter : i32 = block.data.iter(ox, oy);
                     const iterBE = @byteSwap(iter);
                     iters[(py + oy) * psx + (px + ox)] = iterBE;
+
+                    if (iter > 0) {
+                        minIters.* = std.math.min(minIters.*, iter);
+                        maxIters.* = std.math.max(maxIters.*, @intCast(u32, iter));
+                    }
+
                     c += 1;
                 }
             }
@@ -563,9 +560,9 @@ pub const RenderedFile = struct {
 fn run_test(comptime callable: anytype) !void {
     const alloc = std.testing.allocator;
     // const alloc = std.heap.page_allocator;
-    var storage = try mandel.MandelStorage.init(alloc, 128);
+    var storage = try MandelStorage.init(alloc, 128);
     defer storage.deinit();
-    var params = try mandel.Params.init(alloc);
+    var params = try MandelParams.init(alloc);
     defer params.deinit(alloc);
 
     try callable.doit(&storage, &params);
@@ -575,7 +572,7 @@ fn run_test(comptime callable: anytype) !void {
 
 test "file load1" {
     try run_test(struct{
-        pub fn doit(storage: *mandel.MandelStorage, params: *mandel.Params) !void {
+        pub fn doit(storage: *MandelStorage, params: *MandelParams) !void {
             var file = try RenderedFile.init(params, storage);
             defer file.deinit();
             try file.load("data/zoom10_000.dat");
@@ -584,7 +581,7 @@ test "file load1" {
 }
 test "file save1" {
     try run_test(struct{
-        pub fn doit(storage: *mandel.MandelStorage, params: *mandel.Params) !void {
+        pub fn doit(storage: *MandelStorage, params: *MandelParams) !void {
             var file = try RenderedFile.init(params, storage);
             defer file.deinit();
             try file.load("data/zoom10_400.dat");
