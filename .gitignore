@@ -2,4 +2,7 @@
 **/zig-cache/**
 **/exp
 .gdb_history
+nohup.out
+core
+mandel/data/bak
 
