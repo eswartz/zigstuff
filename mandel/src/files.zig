@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
+const json = std.json;
 
 const cimports = @import("cimports.zig");
 const gmp = cimports.gmp;
@@ -17,6 +18,72 @@ const cache = @import("cache.zig");
 const MandelStorage = cache.MandelStorage;
 
 const File = std.fs.File;
+
+pub const JsonFormat = struct {
+
+    pub fn writeConfig(self: MandelParams, alloc: Allocator, path: []const u8) !void {
+        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+        std.debug.print("file = {}, path = {s}\n", .{ file, path });
+
+        const KV = [2] u16;
+        var zoomBitValues : []KV = try alloc.alloc(KV, self.zoomBits.count());
+        defer alloc.free(zoomBitValues);
+        for (self.zoomBits.keys()) |k, i| {
+            zoomBitValues[i] = KV{k, self.zoomBits.getEntry(k).?.value_ptr.*};
+        }
+
+        try json.stringify(.{
+            .zoom = self.zoom,
+            .iters = self.iters,
+            .magShift = self.magShift,
+            .cx = self.cx,
+            .cy = self.cy,
+            .words = self.words,
+            .zoomBits = zoomBitValues,
+        }, .{}, file.writer());
+    }
+
+    pub fn loadConfig(self: *MandelParams, alloc: Allocator, path: []const u8) !void {
+        var file = try std.fs.cwd().openFile(path, .{});
+        var parser = std.json.Parser.init(alloc, false);
+        defer parser.deinit();
+
+        var input = try alloc.alloc(u8, 1024); defer alloc.free(input);
+        var size = try file.reader().readAll(input);
+        var text = input[0..size];
+        std.debug.print("text = {s}\n", .{text});
+
+        const tree = try parser.parse(text);
+        const root = tree.root.Object;
+        self.setCx(alloc, try alloc.dupe(u8, root.get("cx").?.String));
+        self.setCy(alloc, try alloc.dupe(u8, root.get("cy").?.String));
+        self.zoom = @intCast(u16, root.get("zoom").?.Integer);
+        self.iters = @intCast(u32, root.get("iters").?.Integer);
+        self.magShift = @intCast(u5, root.get("magShift").?.Integer);
+        const jsonBits = root.get("words");
+
+        const zoomBitArray = root.get("zoomBits");
+
+        if (zoomBitArray) |zba| {
+            self.zoomBits.clearAndFree();
+            for (zba.Array.items) |kv| {
+                try self.zoomBits.put(@intCast(u16, kv.Array.items[0].Integer), @intCast(u16, kv.Array.items[1].Integer));
+            }
+            // ZIG BUG
+            // self.zoomBits.sort(struct{
+            //     pub fn lessThan(_: anytype, ai: usize, bi: usize) bool {
+            //         return self.zoomBits[ai][0] < self.zoomBits[bi][0];
+            //     }
+            // });
+        }
+
+        self.sortZoomBits();
+
+        self.words = if (jsonBits) |j| @intCast(u16, j.Integer) else self.getIntSize();
+
+    }
+
+};
 
 pub const DecimalMath = struct {
     const Self = @This();
@@ -316,11 +383,9 @@ pub const RenderedFile = struct {
 
         {
             const zoomStr = try self.read_string(reader); defer self.alloc.free(zoomStr);
-            self.params.zoom = try std.fmt.parseInt(u16, zoomStr, 10);
+            self.params.setZoom(try std.fmt.parseInt(u16, zoomStr, 10));
         }
 
-        var bits = self.params.getDefaultIntSize() << 6;
-        self.params.words = bits >> 6;
         self.params.setCx(self.storage.alloc, try DecimalMath.parse_decimal(self.storage.alloc, cxStr, config.MAXBITS));
         self.params.setCy(self.storage.alloc, try DecimalMath.parse_decimal(self.storage.alloc, cyStr, config.MAXBITS));
 

@@ -109,6 +109,8 @@ test "mb256_0" {
 
 
 pub const Params = struct {
+    const ZoomBitMap = std.AutoArrayHashMap(u16, u16);
+
     sx: u32,
     sy: u32,
     zoom: u16,
@@ -117,6 +119,7 @@ pub const Params = struct {
     iters: u32,
     cx: []u8,
     cy: []u8,
+    zoomBits: ZoomBitMap,
 
     pub fn init(alloc: Allocator) !Params {
         return Params{
@@ -128,12 +131,14 @@ pub const Params = struct {
             .magShift = 2,
             .words = 1,
             .iters = 300,
+            .zoomBits = ZoomBitMap.init(alloc)
         };
     }
 
     pub fn deinit(self: *Params, alloc: Allocator) void {
         alloc.free(self.cx);
         alloc.free(self.cy);
+        self.zoomBits.deinit();
     }
 
     pub fn setCx(self: *Params, alloc: Allocator, str: []u8) void {
@@ -154,49 +159,48 @@ pub const Params = struct {
         return @divExact(calcSize, blockSize);
     }
 
+    pub fn setZoom(self: *Params, zoom: u16) void {
+        self.zoom = zoom;
+        self.words = self.getIntSize();
+    }
+
+    /// Get number of words configured for zoom
+    pub fn getIntSize(self: Params) u16 {
+        if (self.zoomBits.count() != 0) {
+            const zoom = self.zoom;
+            var it = self.zoomBits.iterator();
+            var bits : u16 = 64;
+            while (it.next()) |ent| {
+                if (ent.key_ptr.* > zoom) break;
+                bits = ent.value_ptr.*;
+            }
+            return (bits + 63) >> 6;
+        }
+        return self.getDefaultIntSize();
+    }
+
     /// Get number of words needed
     pub fn getDefaultIntSize(self: Params) u16 {
         const zoom = self.zoom;
-        const size: u16 = 1 + ((zoom + std.math.log2_int(u32, self.sx) + 26) >> 6);
+        const size: u16 = 1 + ((zoom + std.math.log2_int(u32, self.sx)) >> 6);
         std.debug.print("zoom={}, isize={}\n", .{ zoom, size });
         return size;
     }
 
-    pub fn writeConfig(self: Params, alloc: Allocator, path: []const u8) !void {
-        _ = alloc;
-        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-        std.debug.print("file = {}, path = {s}\n", .{ file, path });
-
-        try json.stringify(.{
-            .zoom = self.zoom,
-            .iters = self.iters,
-            .magShift = self.magShift,
-            .cx = self.cx,
-            .cy = self.cy,
-            .words = self.words,
-        }, .{}, file.writer());
+    pub fn sortZoomBits(self: *Params) void {
+        const Sorter = struct {
+            entries: *ZoomBitMap.DataList,
+            pub fn lessThan(s: @This(), ai : usize, bi : usize) bool {
+                return s.entries.get(ai).key < s.entries.get(bi).key;
+            }
+        };
+        self.zoomBits.sort(Sorter{ .entries = &self.zoomBits.unmanaged.entries });
     }
 
-    pub fn loadConfig(self: *Params, alloc: Allocator, path: []const u8) !void {
-        var file = try std.fs.cwd().openFile(path, .{});
-        var parser = std.json.Parser.init(alloc, false);
-        defer parser.deinit();
-        // try json.stringify(self, .{}, file.reader());
-        var input = try alloc.alloc(u8, 1024); defer alloc.free(input);
-        var size = try file.reader().readAll(input);
-        var text = input[0..size];
-        std.debug.print("text = {s}\n", .{text});
-
-        var tree = try parser.parse(text);
-        self.setCx(alloc, try alloc.dupe(u8, tree.root.Object.get("cx").?.String));
-        self.setCy(alloc, try alloc.dupe(u8, tree.root.Object.get("cy").?.String));
-        self.zoom = @intCast(u16, tree.root.Object.get("zoom").?.Integer);
-        self.iters = @intCast(u32, tree.root.Object.get("iters").?.Integer);
-        self.magShift = @intCast(u5, tree.root.Object.get("magShift").?.Integer);
-        const jsonBits = tree.root.Object.get("words");
-        self.words = if (jsonBits) |j| @intCast(u16, j.Integer) else self.getDefaultIntSize();
-        // self.*.sx = tree.root.Object.get("sx").?.Float;
-        // self.*.sy = tree.root.Object.get("sy").?.Float;
+    /// Remember current zoom and bits in zoomBits
+    pub fn recordZoomBits(self: *Params) !void {
+        try self.zoomBits.put(self.zoom, self.words << 6);
+        self.sortZoomBits();
     }
 
     pub fn BlockWorkMaker(comptime T: type) type {

@@ -1,7 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
-const json = std.json;
 
 const config = @import("config.zig");
 
@@ -156,13 +155,13 @@ pub const Viewer = struct {
 
     pub fn run(self: *Self) !void {
         if (self.autoSave) {
-            try self.params.loadConfig(self.alloc, self.saveFile);
+            try files.JsonFormat.loadConfig(&self.params, self.alloc, self.saveFile);
             var rootParams = self.params;
             rootParams.cx = try self.alloc.dupe(u8, self.params.cx);
             rootParams.cy = try self.alloc.dupe(u8, self.params.cy);
             self.params.zoom = self.autoFrom;
             self.params.magShift = 0;
-            self.params.words = self.params.getDefaultIntSize();
+            self.params.words = self.params.getIntSize();
 
             while (true) {
                 // load any previous data
@@ -201,10 +200,8 @@ pub const Viewer = struct {
                     }
                 }
 
-                self.params.zoom += 1;
-                if (self.params.zoom <= self.autoTo) {
-                    self.params.words = self.params.getDefaultIntSize();
-                } else {
+                self.params.setZoom(self.params.zoom + 1);
+                if (self.params.zoom > self.autoTo) {
                     self.exit = true;
                     return;
                 }
@@ -213,6 +210,10 @@ pub const Viewer = struct {
                 return err;
             }
         } else {
+            if (files.JsonFormat.loadConfig(&self.params, self.alloc, self.saveFile)) {} else |err| {
+                std.debug.print("Failed to load: {}\n", .{err});
+            }
+
             while (!self.exit) {
                 _ = try self.recalc();
 
@@ -536,8 +537,8 @@ pub const Viewer = struct {
                     },
                     sdl2.SDLK_SPACE => try self.render(),
                     sdl2.SDLK_RETURN => cont = true,
-                    sdl2.SDLK_PLUS, sdl2.SDLK_EQUALS => ps.zoom += 1,
-                    sdl2.SDLK_MINUS => ps.zoom = if (ps.zoom > 1) ps.zoom - 1 else 0,
+                    sdl2.SDLK_PLUS, sdl2.SDLK_EQUALS => ps.setZoom(ps.zoom + 1),
+                    sdl2.SDLK_MINUS => ps.setZoom(if (ps.zoom > 1) ps.zoom - 1 else 0),
                     sdl2.SDLK_UP => if (self.pause or !self.autoSave) try bignum.faddShift(self.alloc, &ps.cy, words, -span, shiftAmt),
                     sdl2.SDLK_DOWN => if (self.pause or !self.autoSave) try bignum.faddShift(self.alloc, &ps.cy, words, span, shiftAmt),
                     sdl2.SDLK_LEFT => if (self.pause or !self.autoSave) try bignum.faddShift(self.alloc, &ps.cx, words, -span, shiftAmt),
@@ -546,17 +547,18 @@ pub const Viewer = struct {
                     sdl2.SDLK_PAGEUP => ps.iters += if (shift) @intCast(u32, 250) else @intCast(u32, 50),
                     sdl2.SDLK_LEFTBRACKET => ps.words = if (words > 1) words - 1 else 1,
                     sdl2.SDLK_RIGHTBRACKET => ps.words += 1,
+                    sdl2.SDLK_BACKSLASH => { try ps.recordZoomBits(); cont = false; },
                     sdl2.SDLK_a => if (ctrl) {
                         try bignum.falign(self.alloc, &ps.cx, words);
                         try bignum.falign(self.alloc, &ps.cy, words);
                     },
                     sdl2.SDLK_r => if (ctrl) try self.clearParams(),
                     sdl2.SDLK_F5 => {
-                        try ps.writeConfig(self.alloc, self.saveFile);
+                        try files.JsonFormat.writeConfig(ps.*, self.alloc, self.saveFile);
                         cont = false;
                     },
                     sdl2.SDLK_F9 => {
-                        if (ps.loadConfig(self.alloc, self.saveFile)) {} else |err| {
+                        if (files.JsonFormat.loadConfig(ps, self.alloc, self.saveFile)) {} else |err| {
                             std.debug.print("Failed to load: {}\n", .{err});
                             cont = false;
                         }
