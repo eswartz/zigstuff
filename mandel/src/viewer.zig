@@ -507,8 +507,10 @@ pub const Viewer = struct {
                 // std.debug.print("Min shift= {}, shift = {}, span = {}\n", .{ minShift, shiftAmt, @floatCast(f64, span) });
                 cont = !self.autoSave;
 
-                var shift = (ke.state & sdl2.KMOD_SHIFT) != 0;
-                var ctrl = (ke.state & sdl2.KMOD_CTRL) != 0;
+                var shift = (ke.keysym.mod & sdl2.KMOD_SHIFT) != 0;
+                var ctrl = (ke.keysym.mod & sdl2.KMOD_CTRL) != 0;
+                std.debug.print("shift={}, ctrl={}, from {x}\n", .{ shift, ctrl, ke.state });
+
                 _ = switch (ke.keysym.sym) {
                     sdl2.SDLK_ESCAPE => { self.exit = true; std.debug.print("Cancelling...\n", .{}); },
                     sdl2.SDLK_F1, sdl2.SDLK_SLASH, sdl2.SDLK_QUESTION => {
@@ -526,6 +528,7 @@ pub const Viewer = struct {
                             \\   0-9: sample 2^n pixels
                             \\   [: -64 bits precision
                             \\   ]: +64 bits precision
+                            \\   \: save zoom -> precision map
                             \\   ctrl-a: align view to precision
                             \\   ctrl-r: clear render at (-1, 0, 1) zoom levels
                             \\   F5: save .json params
@@ -543,7 +546,7 @@ pub const Viewer = struct {
                     sdl2.SDLK_DOWN => if (self.pause or !self.autoSave) try bignum.faddShift(self.alloc, &ps.cy, words, span, shiftAmt),
                     sdl2.SDLK_LEFT => if (self.pause or !self.autoSave) try bignum.faddShift(self.alloc, &ps.cx, words, -span, shiftAmt),
                     sdl2.SDLK_RIGHT => if (self.pause or !self.autoSave) try bignum.faddShift(self.alloc, &ps.cx, words, span, shiftAmt),
-                    sdl2.SDLK_PAGEDOWN => ps.iters = @intCast(u32, std.math.max(0, @intCast(i32, ps.iters) - if (shift) @intCast(i32, 250) else @intCast(i32, 50))),
+                    sdl2.SDLK_PAGEDOWN => ps.iters = @intCast(u32, std.math.max(0, @intCast(i32, ps.iters) - (if (shift) @intCast(i32, 250) else @intCast(i32, 50)))),
                     sdl2.SDLK_PAGEUP => ps.iters += if (shift) @intCast(u32, 250) else @intCast(u32, 50),
                     sdl2.SDLK_LEFTBRACKET => ps.words = if (words > 1) words - 1 else 1,
                     sdl2.SDLK_RIGHTBRACKET => ps.words += 1,
