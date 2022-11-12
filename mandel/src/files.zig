@@ -91,7 +91,7 @@ pub const DecimalMath = struct {
     fn strlen(s:[*c]u8) usize {
         var l : usize = 0;
         while (s[l] != 0) l += 1;
-        std.debug.print("len: {}\n", .{l});
+        // std.debug.print("len: {}\n", .{l});
         return l;
     }
 
@@ -404,8 +404,9 @@ pub const RenderedFile = struct {
         const psyStr = try self.read_string(reader); defer self.alloc.free(psyStr);
         const psx = try std.fmt.parseInt(u32, psxStr, 10);
         const psy = try std.fmt.parseInt(u32, psyStr, 10);
-        self.params.sx = psx;
-        self.params.sy = psy;
+        // don't override these
+        //self.params.sx = psx;
+        //self.params.sy = psy;
 
         const exp : u32 = psx * psy;
         var iters = try self.alloc.alloc(i32, exp); defer self.alloc.free(iters);
@@ -435,7 +436,7 @@ pub const RenderedFile = struct {
         var iters8 = @ptrCast([*]u8, iters);
 
         while (zstr.avail_in > 0) {
-            std.debug.print("zlib iter {}...\n", .{ zstr.avail_in });
+            // std.debug.print("zlib iter {}...\n", .{ zstr.avail_in });
             const avail = @intCast(c_uint, iters.len * 4 - i8ptr);
             zstr.avail_out = avail;
             zstr.next_out = iters8 + i8ptr;
@@ -449,7 +450,7 @@ pub const RenderedFile = struct {
 
             i8ptr = zstr.total_out;
         }
-
+        std.debug.print("zlib read {}...\n", .{ zstr.total_out });
         _ = zlib.inflateEnd(&zstr);
     }
 

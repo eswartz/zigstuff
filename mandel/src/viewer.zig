@@ -215,7 +215,13 @@ pub const Viewer = struct {
             }
 
             while (!self.exit) {
-                _ = try self.recalc();
+                if (!self.pause) {
+                    if (try self.recalc()) {
+                        continue;
+                    }
+                } else {
+                    try self.render();
+                }
 
                 while (!self.exit) {
                     if (try self.handleInput())
@@ -302,6 +308,9 @@ pub const Viewer = struct {
         );
         defer workLoad.deinit(self.alloc);
 
+        _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 0);
+        _ = sdl2.SDL_RenderClear(self.renderer);
+
         for (workLoad.blocks) |block| {
             self.renderBlock(block.px, block.py, block.data);
         }
@@ -319,32 +328,18 @@ pub const Viewer = struct {
     fn recalcT(self: *Self, comptime BigIntType: type) !bool {
         std.debug.print("Rendering with BigInt({s}) at x= {s}, y= {s}, zoom= {}, iters= {}...\n", .{ @typeName(BigIntType), self.params.cx, self.params.cy, self.params.zoom, self.params.iters });
 
-        _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 0);
-        _ = sdl2.SDL_RenderClear(self.renderer);
-
         var timer = try std.time.Timer.start();
         const timeStart = timer.lap();
 
         const calcSize = self.getCalcSize();
 
-        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage,
-                calcSize, 0, 0,
+        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(
+            self.alloc, self.params, &self.storage,
+            calcSize, 0, 0,
         );
         defer workLoad.deinit(self.alloc);
 
         std.debug.print("time for making blocks = {}\n", .{timer.lap() - timeStart});
-
-        for (workLoad.blocks) |block| {
-            self.renderBlock(block.px, block.py, block.data);
-        }
-
-        _ = sdl2.SDL_RenderPresent(self.renderer);
-
-        std.debug.print("time for first block draw = {}\n", .{timer.lap() - timeStart});
-
-        if (self.pause) {
-            return false;
-        }
 
         const BlockType = @TypeOf(workLoad.blocks[0]);
 
@@ -397,13 +392,11 @@ pub const Viewer = struct {
         std.debug.print("time for thread launch = {}\n", .{timer.lap() - timeStart});
 
         // render as work arrives
-        var cont: bool = false;
         var done: bool = false;
 
         while (!done) {
-            cont = try self.handleInput();
-
-            if (cont) {
+            if (try self.handleInput()) {
+                // params changed, abort recalculation
                 break;
             }
 
@@ -415,7 +408,7 @@ pub const Viewer = struct {
                 while (true) {
                     block = readyBlocks.popOrNull();
                     if (block == null) {
-                        if (blocksLeft.load(.Acquire) == 0) {
+                        if (blocksLeft.load(.SeqCst) == 0) {
                             done = true;
                             std.debug.print("time for calculation   = {d}s\n", .{@intToFloat(f64, (timer.lap() - timeStart)) / 1.0e9});
                         }
@@ -426,6 +419,7 @@ pub const Viewer = struct {
                 }
             }
 
+            // render anything that updated
             if (any) {
                 _ = sdl2.SDL_RenderPresent(self.renderer);
             }
@@ -509,7 +503,6 @@ pub const Viewer = struct {
 
                 var shift = (ke.keysym.mod & sdl2.KMOD_SHIFT) != 0;
                 var ctrl = (ke.keysym.mod & sdl2.KMOD_CTRL) != 0;
-                std.debug.print("shift={}, ctrl={}, from {x}\n", .{ shift, ctrl, ke.state });
 
                 _ = switch (ke.keysym.sym) {
                     sdl2.SDLK_ESCAPE => { self.exit = true; std.debug.print("Cancelling...\n", .{}); },
@@ -535,6 +528,7 @@ pub const Viewer = struct {
                             \\   F9: load .json params
                             \\   F4: save .dat file
                             \\   F8: load .dat file
+                            \\
                             , .{});
                         cont = false;
                     },
