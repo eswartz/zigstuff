@@ -456,7 +456,7 @@ pub const RenderedFile = struct {
 
     fn decompress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []const i32) !void {
         _ = psy;
-        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage, self.params.sx, 0, 0);
+        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage, self.params.sx);
         defer workLoad.deinit(self.storage.alloc);
 
         std.debug.print("iters={}, psx={}, psy={}\n", .{ iters.len, self.params.sx, self.params.sy });
@@ -539,7 +539,7 @@ pub const RenderedFile = struct {
 
     fn compress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []i32, minIters: *u32, maxIters: *u32) !void {
         _ = psy;
-        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage, self.params.sx, 0, 0);
+        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage, self.params.sx);
         defer workLoad.deinit(self.storage.alloc);
 
         std.debug.print("iters={}, psx={}, psy={}\n", .{ iters.len, self.params.sx, self.params.sy });

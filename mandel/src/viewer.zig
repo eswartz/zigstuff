@@ -7,8 +7,7 @@ const config = @import("config.zig");
 const bignum = @import("bignum.zig");
 const Mandel = bignum.Mandel;
 
-const boxfill = @import("boxfill.zig");
-const XY = boxfill.XY;
+const XY = @import("types.zig").XY;
 
 const algo = @import("algo.zig");
 const MandelParams = algo.Params;
@@ -273,9 +272,7 @@ pub const Viewer = struct {
         if (params.zoom == 0 and zoom < 0) return;
 
         params.zoom = @intCast(u16, @intCast(i16, params.zoom) + zoom);
-        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.alloc, params, &self.storage,
-            calcSize, 0, 0,
-        );
+        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.alloc, params, &self.storage, calcSize);
         defer workLoad.deinit(self.alloc);
 
         for (workLoad.blocks) |block| {
@@ -303,9 +300,7 @@ pub const Viewer = struct {
     }
 
     fn renderT(self: *Self, comptime BigIntType: type) !void {
-        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage,
-                self.getCalcSize(), 0, 0,
-        );
+        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage, self.getCalcSize());
         defer workLoad.deinit(self.alloc);
 
         _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 0);
@@ -333,10 +328,7 @@ pub const Viewer = struct {
 
         const calcSize = self.getCalcSize();
 
-        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(
-            self.alloc, self.params, &self.storage,
-            calcSize, 0, 0,
-        );
+        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage, calcSize);
         defer workLoad.deinit(self.alloc);
 
         std.debug.print("time for making blocks = {}\n", .{timer.lap() - timeStart});
@@ -478,6 +470,58 @@ pub const Viewer = struct {
         }
     }
 
+    /// Look for an interesting area nearby where there's a hole, defined
+    /// as an area whose Block has the most number of high-value unfinished iterations
+    fn findHoleT(self: *Self, comptime BigIntType: type) !XY {
+        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params, &self.storage, self.params.sx);
+        defer workLoad.deinit(self.storage.alloc);
+
+        const ps = self.storage.blockSize;
+
+        var deepestIter : u32 = 0;
+        var deepestNumUnset : u32 = 0;
+        var deepestScore : f64 = 0;
+        var deepestPx : u32 = 0;
+        var deepestPy : u32 = 0;
+
+        const mag: u32 = @as(u32, 1) << self.params.magShift;
+        for (workLoad.blocks) |block| {
+            var numUnset : u32 = 0;
+            var maxIter : u32 = 0;
+            var score : f64 = 0;
+
+            var oy : u32 = 0;
+            while (oy < ps) : (oy += mag) {
+                var ox : u32 = 0;
+                while (ox < ps) : (ox += mag) {
+                    const iter = block.data.iter(ox, oy);
+                    if (iter < 0 or iter >= self.params.iters) numUnset += 1;
+                    const absIter = @intCast(u32, if (iter < 0) -iter else iter);
+                    score += @intToFloat(f64, absIter);
+                    if (absIter > maxIter) {
+                        maxIter = absIter;
+                    }
+                }
+            }
+            if (score > deepestScore and (numUnset > deepestNumUnset or maxIter >= deepestIter)) {
+                deepestPx = block.px;
+                deepestPy = block.py;
+                deepestIter = maxIter;
+                deepestScore = score;
+                std.debug.print("--> {},{} = {} #{}\n", .{ block.px, block.py, maxIter, numUnset });
+            }
+        }
+        if (deepestIter == 0) return error.NoDeepestFound;
+        return XY{ .x = deepestPx, .y = deepestPy };
+    }
+
+    fn findHole(self: *Self) !XY {
+        return try switch (self.params.words) {
+            inline 1...config.MAXWORDS => |v| self.findHoleT(bignum.BigInt(64 * v)),
+            else => self.findHoleT(bignum.BigInt(64 * config.MAXWORDS)),
+        };
+    }
+
     fn handleInput(self: *Self) !bool {
         const blockSize = self.storage.blockSize;
 
@@ -528,6 +572,7 @@ pub const Viewer = struct {
                             \\   F9: load .json params
                             \\   F4: save .dat file
                             \\   F8: load .dat file
+                            \\   F12: search for a hole and move there
                             \\
                             , .{});
                         cont = false;
@@ -564,6 +609,19 @@ pub const Viewer = struct {
                     sdl2.SDLK_F8 => { cont = try self.loadData(); try self.render(); },
                     sdl2.SDLK_PAUSE => { self.setPause(!self.pause); cont = true; },
                     '0'...'9' => |v| ps.magShift = @intCast(u5, v - '0'),
+                    sdl2.SDLK_F12 => {
+                        if (self.findHole()) |xy| {
+                            std.debug.print("xy = {}, {}\n", .{xy.x, xy.y});
+                            try bignum.fadj(self.alloc, &ps.cx, words, span, @intCast(i32, xy.x), @intCast(i32, ps.sx));
+                            try bignum.fadj(self.alloc, &ps.cy, words, span, @intCast(i32, xy.y), @intCast(i32, ps.sy));
+                            // cont  = false;
+                        } else |err| if (err == error.NoDeepestFound) {
+                            // fine
+                            cont  = false;
+                        } else {
+                            return err;
+                        }
+                    },
                     else => cont = false,
                 };
             } else if (event.type == sdl2.SDL_MOUSEBUTTONDOWN) {
@@ -572,8 +630,8 @@ pub const Viewer = struct {
                 if (me.button == 1 and shift) {
                     cont = true;
                     // recenter on mouse position
-                    try bignum.fadj(self.alloc, &ps.cy, words, span, (me.y + (blockSize >> 1)) & ~(blockSize - 1), @intCast(i32, ps.sy));
                     try bignum.fadj(self.alloc, &ps.cx, words, span, (me.x + (blockSize >> 1)) & ~(blockSize - 1), @intCast(i32, ps.sx));
+                    try bignum.fadj(self.alloc, &ps.cy, words, span, (me.y + (blockSize >> 1)) & ~(blockSize - 1), @intCast(i32, ps.sy));
                 }
             }
         }

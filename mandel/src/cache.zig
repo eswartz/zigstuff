@@ -13,9 +13,7 @@ const BigFixedFloat = bignum.BigFixedFloat;
 const algo = @import("algo.zig");
 const MandelAlgo = algo.Mandel;
 
-const boxfill = @import("boxfill.zig");
-const XY = boxfill.XY;
-
+const XY = @import("types.zig").XY;
 
 pub const BigCoord = struct {
     const Self = @This();

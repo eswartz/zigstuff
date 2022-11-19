@@ -17,7 +17,8 @@ const BlockData = cache.BlockData;
 const MandelStorage = cache.MandelStorage;
 
 const boxfill = @import("boxfill.zig");
-const XY = boxfill.XY;
+
+const XY = @import("types.zig").XY;
 
 pub const MandelAlgo = struct {
     pub fn init(comptime BigIntType : type) type {
@@ -325,8 +326,7 @@ pub const Params = struct {
             fxs: []T,
             fys: []T,
 
-            pub fn init(alloc: Allocator, params: Params, storage: *MandelStorage,
-                        calcSize : u32, xoffs : i32, yoffs : i32) !Self {
+            pub fn init(alloc: Allocator, params: Params, storage: *MandelStorage, calcSize : u32) !Self {
                 var fxs = std.ArrayList(T).init(alloc);
                 var fys = std.ArrayList(T).init(alloc);
 
@@ -358,14 +358,14 @@ pub const Params = struct {
                     const hx = @intCast(i32, calcSize / 2);
                     var px: i32 = -hx;
                     while (px < calcSize) : (px += 1) {
-                        try fxs.append(fx0 + floatStep * (px + xoffs));
+                        try fxs.append(fx0 + floatStep * px);
                     }
                 }
                 {
                     const hy = @intCast(i32, calcSize / 2);
                     var py: i32 = -hy;
                     while (py < calcSize) : (py += 1) {
-                        try fys.append(fy0 + floatStep * (py + yoffs));
+                        try fys.append(fy0 + floatStep * py);
                     }
                 }
 
