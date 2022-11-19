@@ -164,6 +164,16 @@ pub const Params = struct {
         self.words = self.getIntSize();
     }
 
+    pub fn setZoomInteractive(self: *Params, zoom: u16) void {
+        const curZoom = self.zoom;
+        const curWords = self.words;
+        self.setZoom(zoom);
+        if (curZoom < zoom and self.words < curWords) {
+            // probably fell off the end
+            self.words = curWords;
+        }
+    }
+
     /// Get number of words configured for zoom
     pub fn getIntSize(self: Params) u16 {
         if (self.zoomBits.count() != 0) {
