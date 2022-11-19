@@ -4,5 +4,5 @@
 .gdb_history
 nohup.out
 core
-mandel/data/bak
+mandel/data/**
 
