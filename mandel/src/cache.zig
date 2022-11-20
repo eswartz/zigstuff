@@ -40,7 +40,7 @@ pub const BigCoord = struct {
         return self.x == other.x and self.y == other.y;
     }
 
-    pub fn to_string(self: BigCoord, alloc: Allocator) ![]u8 {
+    pub fn to_string(self: *const BigCoord, alloc: Allocator) ![]u8 {
         var xs = try bignum.printBig(alloc, BigIntMax, self.x); defer alloc.free(xs);
         var ys = try bignum.printBig(alloc, BigIntMax, self.y); defer alloc.free(ys);
         return try std.fmt.allocPrint(alloc, "[{s}, {s}]", .{ xs, ys });
@@ -70,11 +70,11 @@ pub const BlockData = struct {
         arena.free(self.iters);
     }
 
-    pub inline fn iter(self: Self, x: u32, y: u32) i32 {
+    pub inline fn iter(self: *const Self, x: u32, y: u32) i32 {
         return self.iters[(y << self.szsh) + x];
     }
 
-    pub inline fn setIter(self: Self, x: u32, y: u32, it: i32) void {
+    pub inline fn setIter(self: *Self, x: u32, y: u32, it: i32) void {
         self.iters[(y << self.szsh) + x] = it;
     }
 };
@@ -118,7 +118,7 @@ pub const MandelLayer = struct {
     }
 
     /// Get the block
-    pub fn get(self: Self, coord: BigCoord) ?*BlockData {
+    pub fn get(self: *const Self, coord: BigCoord) ?*BlockData {
         return self.blocks.get(coord);
     }
 

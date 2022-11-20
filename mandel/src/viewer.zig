@@ -588,7 +588,7 @@ pub const Viewer = struct {
                     sdl2.SDLK_PAGEDOWN => ps.iters = @intCast(u32, std.math.max(0, @intCast(i32, ps.iters) - (if (shift) @intCast(i32, 250) else @intCast(i32, 50)))),
                     sdl2.SDLK_PAGEUP => ps.iters += if (shift) @intCast(u32, 250) else @intCast(u32, 50),
                     sdl2.SDLK_LEFTBRACKET => ps.words = if (words > 1) words - 1 else 1,
-                    sdl2.SDLK_RIGHTBRACKET => ps.words += 1,
+                    sdl2.SDLK_RIGHTBRACKET => ps.words = if (words < bignum.MAXWORDS) words + 1 else bignum.MAXWORDS,
                     sdl2.SDLK_BACKSLASH => { try ps.recordZoomBits(); cont = false; },
                     sdl2.SDLK_a => if (ctrl) {
                         try bignum.falign(self.alloc, &ps.cx, words);

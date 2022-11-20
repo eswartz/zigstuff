@@ -79,7 +79,7 @@ pub const JsonFormat = struct {
 
         self.sortZoomBits();
 
-        self.words = if (jsonBits) |j| @intCast(u16, j.Integer) else self.getIntSize();
+        self.words = if (jsonBits) |j|  std.math.min(bignum.MAXWORDS, @intCast(u16, j.Integer)) else self.getIntSize();
 
     }
 
@@ -421,7 +421,7 @@ pub const RenderedFile = struct {
         std.debug.print("Loaded blocks\n", .{});
     }
 
-    fn decompress_iters(self: Self, iters : []i32, reader : File.Reader, fileSize: u64) !void {
+    fn decompress_iters(self: *Self, iters : []i32, reader : File.Reader, fileSize: u64) !void {
         const zmem = try self.alloc.alloc(u8, fileSize); defer self.alloc.free(zmem);
         const zlen = try reader.readAll(zmem);
 
@@ -488,7 +488,7 @@ pub const RenderedFile = struct {
         }
     }
 
-    fn read_string(self: Self, reader : File.Reader) ![:0]u8 {
+    fn read_string(self: *const Self, reader : File.Reader) ![:0]u8 {
         var length = try reader.readIntBig(u16);
         var str = try self.alloc.allocSentinel(u8, length, 0);
         var len = try reader.read(str);
@@ -531,7 +531,7 @@ pub const RenderedFile = struct {
         try self.compress_iters(iters, writer);
     }
 
-    fn write_string_free(self: Self, writer : File.Writer, str: []u8) !void {
+    fn write_string_free(self: *const Self, writer : File.Writer, str: []u8) !void {
         try writer.writeIntBig(u16, @intCast(u16, str.len));
         try writer.writeAll(str);
         self.alloc.free(str);
@@ -572,7 +572,7 @@ pub const RenderedFile = struct {
         }
     }
 
-    fn compress_iters(self: Self, iters: []i32, writer: File.Writer) !void {
+    fn compress_iters(self: *Self, iters: []i32, writer: File.Writer) !void {
         var obuf = try self.alloc.alloc(u8, 4096); defer self.alloc.free(obuf);
 
         var zstr : zlib.z_stream = undefined;
