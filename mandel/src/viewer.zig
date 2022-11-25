@@ -275,6 +275,7 @@ pub const Viewer = struct {
         if (params.zoom == 0 and zoomOffs < 0) return;
 
         params.zoom = @intCast(u16, @intCast(i16, params.zoom) + zoomOffs);
+        std.debug.print("Resetting blocks at zoom {}\n", .{ params.zoom });
         var blockList = try MandelParams.BlockGenerator(BigIntType).init(self.alloc, params, &self.storage, calcSize);
         defer blockList.deinit(self.alloc);
 
