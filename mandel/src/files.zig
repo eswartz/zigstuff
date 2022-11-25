@@ -364,7 +364,7 @@ pub const RenderedFile = struct {
         _ = self;
     }
 
-    pub fn load(self: *Self, path: []const u8) !void {
+    pub fn load(self: *Self, path: []const u8) !bool {
         var file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
 
@@ -374,10 +374,10 @@ pub const RenderedFile = struct {
             return error.UnsupportedVersion;
         }
 
-        try self.load_version_1_1(reader, (try file.stat()).size);
+        return try self.load_version_1_1(reader, (try file.stat()).size);
     }
 
-    fn load_version_1_1(self: *Self, reader: File.Reader, fileSize: u64) !void {
+    fn load_version_1_1(self: *Self, reader: File.Reader, fileSize: u64) !bool {
         var cxStr = try self.read_string(reader); defer self.alloc.free(cxStr);
         var cyStr = try self.read_string(reader); defer self.alloc.free(cyStr);
 
@@ -413,12 +413,13 @@ pub const RenderedFile = struct {
         std.mem.set(i32, iters, 0);
         try self.decompress_iters(iters, reader, fileSize);
 
-        try switch (self.params.words) {
+        const complete = try switch (self.params.words) {
             inline 1...bignum.MAXWORDS => |w| self.decompress_blocks(bignum.BigInt(w << 6), psx, psy, iters),
             else => unreachable,
         };
 
         std.debug.print("Loaded blocks\n", .{});
+        return complete;
     }
 
     fn decompress_iters(self: *Self, iters : []i32, reader : File.Reader, fileSize: u64) !void {
@@ -454,7 +455,7 @@ pub const RenderedFile = struct {
         _ = zlib.inflateEnd(&zstr);
     }
 
-    fn decompress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []const i32) !void {
+    fn decompress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []const i32) !bool {
         // assume square
         if (psx != psy) unreachable;
 
@@ -484,6 +485,7 @@ pub const RenderedFile = struct {
 
         const ps = self.storage.blockSize;
         var c : u32 = 0;
+        var complete : bool = true;
         for (blockList.blocks) |block| {
             const px = block.px;
             const py = block.py;
@@ -503,10 +505,14 @@ pub const RenderedFile = struct {
                     //     i += 1;
                     //     if (@rem(i, 16) == 0) std.debug.print("\n", .{});
                     // }
-
                 }
             }
+
+            complete = complete and block.isComplete();
         }
+
+        std.debug.print("Frame is complete: {}\n", .{complete});
+        return complete;
     }
 
     fn read_string(self: *const Self, reader : File.Reader) ![:0]u8 {

@@ -334,6 +334,9 @@ pub const Viewer = struct {
     fn recalcT(self: *Self, comptime BigIntType: type) !bool {
         std.debug.print("Rendering with BigInt({s}) at x= {s}, y= {s}, zoom= {}, iters= {}...\n", .{ @typeName(BigIntType), self.params.cx, self.params.cy, self.params.zoom, self.params.iters });
 
+        _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 0);
+        _ = sdl2.SDL_RenderClear(self.renderer);
+
         var timer = try std.time.Timer.start();
         const timeStart = timer.lap();
 
@@ -473,8 +476,8 @@ pub const Viewer = struct {
     fn loadData(self: *Self) !bool {
         var data = try self.formatDataFile(); defer self.alloc.free(data);
         var file = try files.RenderedFile.init(&self.params, &self.storage);
-        if (file.load(data)) {
-            return true;
+        if (file.load(data)) |complete| {
+            return complete;
         } else |err| {
             std.debug.print("Failed to load: {}\n", .{err});
             return false;
@@ -629,7 +632,7 @@ pub const Viewer = struct {
                         }
                     },
                     sdl2.SDLK_F4 => cont = try self.saveData(),
-                    sdl2.SDLK_F8 => { cont = try self.loadData(); try self.render(); },
+                    sdl2.SDLK_F8 => { cont = try self.loadData(); if (!cont) try self.render(); },
                     sdl2.SDLK_PAUSE => { self.setPause(!self.pause); cont = true; },
                     '0'...'9' => |v| ps.magShift = @intCast(u5, v - '0'),
                     sdl2.SDLK_F12 => {

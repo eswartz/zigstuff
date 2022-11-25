@@ -308,6 +308,27 @@ pub const Params = struct {
                 }
                 return recalc > 0;
             }
+
+            pub fn isComplete(self : Self) bool {
+                const rectSize = self.rectSize;
+                const data = self.data;
+
+                const blockSize = data.sz;
+                var oy: u32 = 0;
+
+                while (oy < blockSize) : (oy += rectSize) {
+                    var ox: u32 = 0;
+                    while (ox < blockSize) : (ox += rectSize) {
+                        const iters = data.iter(ox, oy);
+                        if (iters == 0 or (iters < 0 and -iters < self.maxIters)) {
+                            // need to calculate (more)
+                            return false;
+                        }
+                    }
+                }
+
+                return true;
+            }
         };
     }
 
