@@ -26,6 +26,8 @@ pub const Viewer = struct {
     window: *sdl2.SDL_Window,
     renderer: *sdl2.SDL_Renderer,
     params: MandelParams,
+
+    currentBlockList: *MandelParams.BlockList,
     exit: bool,
     pause: bool,
     saveFile : []u8,
@@ -140,6 +142,7 @@ pub const Viewer = struct {
             .window = window.?,
             .renderer = renderer.?,
             .params = params,
+            .currentBlockList = undefined,
             .exit = false,
             .pause = false,
             .saveFile = saveName,
@@ -266,16 +269,16 @@ pub const Viewer = struct {
         }
     }
 
-    fn clearParamsT(self: *Self, comptime BigIntType : type, zoom : i16) !void {
+    fn clearParamsT(self: *Self, comptime BigIntType : type, zoomOffs : i16) !void {
         const calcSize = self.getCalcSize();
         var params = self.params;
-        if (params.zoom == 0 and zoom < 0) return;
+        if (params.zoom == 0 and zoomOffs < 0) return;
 
-        params.zoom = @intCast(u16, @intCast(i16, params.zoom) + zoom);
-        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.alloc, params, &self.storage, calcSize);
-        defer workLoad.deinit(self.alloc);
+        params.zoom = @intCast(u16, @intCast(i16, params.zoom) + zoomOffs);
+        var blockList = try MandelParams.BlockGenerator(BigIntType).init(self.alloc, params, &self.storage, calcSize);
+        defer blockList.deinit(self.alloc);
 
-        for (workLoad.blocks) |block| {
+        for (blockList.blocks) |block| {
             std.mem.set(i32, block.data.iters, 0);
         }
     }
@@ -299,14 +302,21 @@ pub const Viewer = struct {
         return calcSize;
     }
 
+    // fn ensureBlockList(self: *Self, comptime BigIntType: type) !BlockList {
+    //     if (self.currentBlockList)
+    //     var blockList = try MandelParams.BlockGenerator(BigIntType).init(self.alloc, self.params, &self.storage, self.getCalcSize());
+    //     defer blockList.deinit(self.alloc);
+
+    // }
+
     fn renderT(self: *Self, comptime BigIntType: type) !void {
-        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage, self.getCalcSize());
-        defer workLoad.deinit(self.alloc);
+        var blockList = try MandelParams.BlockGenerator(BigIntType).init(self.alloc, self.params, &self.storage, self.getCalcSize());
+        defer blockList.deinit(self.alloc);
 
         _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 0);
         _ = sdl2.SDL_RenderClear(self.renderer);
 
-        for (workLoad.blocks) |block| {
+        for (blockList.blocks) |block| {
             self.renderBlock(block.px, block.py, block.data);
         }
 
@@ -328,12 +338,12 @@ pub const Viewer = struct {
 
         const calcSize = self.getCalcSize();
 
-        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.alloc, self.params, &self.storage, calcSize);
-        defer workLoad.deinit(self.alloc);
+        var blockList = try MandelParams.BlockGenerator(BigIntType).init(self.alloc, self.params, &self.storage, calcSize);
+        defer blockList.deinit(self.alloc);
 
         std.debug.print("time for making blocks = {}\n", .{timer.lap() - timeStart});
 
-        const BlockType = @TypeOf(workLoad.blocks[0]);
+        const BlockType = @TypeOf(blockList.blocks[0]);
 
         const ThreadInfo = struct {
             fn calcThread(stop: *std.atomic.Atomic(bool),
@@ -368,16 +378,16 @@ pub const Viewer = struct {
         var readyMutex: std.Thread.Mutex = .{};
         var blocksChanged = std.atomic.Atomic(usize).init(0);
         var blockIndex = std.atomic.Atomic(usize).init(0);
-        var blocksLeft = std.atomic.Atomic(usize).init(workLoad.blocks.len);
+        var blocksLeft = std.atomic.Atomic(usize).init(blockList.blocks.len);
 
-        const NTHREADS: usize = 3 * std.math.min(workLoad.blocks.len, std.math.min(config.MAXTHREADS, try std.Thread.getCpuCount())) / 4;
+        const NTHREADS: usize = 3 * std.math.min(blockList.blocks.len, std.math.min(config.MAXTHREADS, try std.Thread.getCpuCount())) / 4;
         var threads: [256]std.Thread = undefined;
 
         var nt: u32 = 0;
         while (nt < NTHREADS) : (nt += 1) {
             threads[nt] = try std.Thread.spawn(.{}, ThreadInfo.calcThread, .{
                 &stop, &readyBlocks, &readyMutex,
-                &blockIndex, workLoad.blocks, &blocksLeft, &blocksChanged,
+                &blockIndex, blockList.blocks, &blocksLeft, &blocksChanged,
             });
         }
 
@@ -473,8 +483,8 @@ pub const Viewer = struct {
     /// Look for an interesting area nearby where there's a hole, defined
     /// as an area whose Block has the most number of high-value unfinished iterations
     fn findHoleT(self: *Self, comptime BigIntType: type) !XY {
-        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params, &self.storage, self.params.sx);
-        defer workLoad.deinit(self.storage.alloc);
+        var blockList = try MandelParams.BlockGenerator(BigIntType).init(self.storage.alloc, self.params, &self.storage, self.params.sx);
+        defer blockList.deinit(self.storage.alloc);
 
         const ps = self.storage.blockSize;
 
@@ -485,7 +495,7 @@ pub const Viewer = struct {
         var deepestPy : u32 = 0;
 
         const mag: u32 = @as(u32, 1) << self.params.magShift;
-        for (workLoad.blocks) |block| {
+        for (blockList.blocks) |block| {
             var numUnset : u32 = 0;
             var maxIter : u32 = 0;
             var score : f64 = 0;

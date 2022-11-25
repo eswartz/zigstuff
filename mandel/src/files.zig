@@ -131,7 +131,7 @@ pub const DecimalMath = struct {
         var strptr = gmp.mpz_get_str(null, 16, &mpz);
         const slen = strlen(strptr);
         const istr = strptr[0..slen];
-        std.debug.print("##> {}: {s}\n", .{istr.len, istr});
+        // std.debug.print("##> {}: {s}\n", .{istr.len, istr});
 
         var list = std.ArrayList(u8).init(alloc);
         var i : usize = 0;
@@ -404,7 +404,7 @@ pub const RenderedFile = struct {
         const psyStr = try self.read_string(reader); defer self.alloc.free(psyStr);
         const psx = try std.fmt.parseInt(u32, psxStr, 10);
         const psy = try std.fmt.parseInt(u32, psyStr, 10);
-        // don't override these
+        // don't override these (i.e. loading a file into a smaller or larger window)
         //self.params.sx = psx;
         //self.params.sy = psy;
 
@@ -455,15 +455,36 @@ pub const RenderedFile = struct {
     }
 
     fn decompress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []const i32) !void {
-        _ = psy;
-        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage, self.params.sx);
-        defer workLoad.deinit(self.storage.alloc);
+        // assume square
+        if (psx != psy) unreachable;
+
+        // Make blocklist with desired params, which may differ from the file;
+        // psx/psy may be smaller or larger than the file, in which case the blocks are
+        // either a smaller or larger bounds around the common cx/cy.
+        // This requires adjusting the zoom to match.
+        var actualParams = self.params.*;
+        var tpsx = psx;
+        while (tpsx < actualParams.sx) {
+            if (actualParams.zoom == 0) {
+                return error.CannotUseAtZoomLevelAndResolution;
+            }
+            actualParams.zoom -= 1;
+            tpsx <<= 1;
+            std.debug.print("zooming out from file...\n", .{});
+        }
+        while (tpsx > actualParams.sx) {
+            actualParams.zoom += 1;
+            tpsx >>= 1;
+            std.debug.print("zooming in from file...\n", .{});
+        }
+        var blockList = try MandelParams.BlockGenerator(BigIntType).init(self.storage.alloc, actualParams, self.storage, psx);
+        defer blockList.deinit(self.storage.alloc);
 
         std.debug.print("iters={}, psx={}, psy={}\n", .{ iters.len, self.params.sx, self.params.sy });
 
         const ps = self.storage.blockSize;
         var c : u32 = 0;
-        for (workLoad.blocks) |block| {
+        for (blockList.blocks) |block| {
             const px = block.px;
             const py = block.py;
 
@@ -538,9 +559,9 @@ pub const RenderedFile = struct {
     }
 
     fn compress_blocks(self : *Self, comptime BigIntType : type, psx : u32, psy : u32, iters: []i32, minIters: *u32, maxIters: *u32) !void {
-        _ = psy;
-        var workLoad = try MandelParams.BlockWorkMaker(BigIntType).init(self.storage.alloc, self.params.*, self.storage, self.params.sx);
-        defer workLoad.deinit(self.storage.alloc);
+        if (psx != psy) unreachable;
+        var blockList = try MandelParams.BlockGenerator(BigIntType).init(self.storage.alloc, self.params.*, self.storage, self.params.sx);
+        defer blockList.deinit(self.storage.alloc);
 
         std.debug.print("iters={}, psx={}, psy={}\n", .{ iters.len, self.params.sx, self.params.sy });
 
@@ -549,7 +570,7 @@ pub const RenderedFile = struct {
 
         const ps = self.storage.blockSize;
         var c : u32 = 0;
-        for (workLoad.blocks) |block| {
+        for (blockList.blocks) |block| {
             const px = block.px;
             const py = block.py;
             // std.debug.print("block={*}\n", .{ block.data });

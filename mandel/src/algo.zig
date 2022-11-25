@@ -21,7 +21,7 @@ const boxfill = @import("boxfill.zig");
 const XY = @import("types.zig").XY;
 
 pub const MandelAlgo = struct {
-    pub fn init(comptime BigIntType : type) type {
+    pub fn init(comptime BigIntType: type) type {
         return struct {
             const BigFloat = BigFixedFloat(BigIntType, 8);
             const BigFloatType = BigFloat.Repr;
@@ -108,7 +108,6 @@ test "mb256_0" {
     try testing.expectEqual(@as(i64, 98465), itersTot);
 }
 
-
 pub const Params = struct {
     const ZoomBitMap = std.AutoArrayHashMap(u16, u16);
 
@@ -123,17 +122,7 @@ pub const Params = struct {
     zoomBits: ZoomBitMap,
 
     pub fn init(alloc: Allocator) !Params {
-        return Params{
-            .sx = 1024,
-            .sy = 1024,
-            .cx = try alloc.dupe(u8, ".0000000000000000"),
-            .cy = try alloc.dupe(u8, ".0000000000000000"),
-            .zoom = 0,
-            .magShift = 2,
-            .words = 1,
-            .iters = 300,
-            .zoomBits = ZoomBitMap.init(alloc)
-        };
+        return Params{ .sx = 1024, .sy = 1024, .cx = try alloc.dupe(u8, ".0000000000000000"), .cy = try alloc.dupe(u8, ".0000000000000000"), .zoom = 0, .magShift = 2, .words = 1, .iters = 300, .zoomBits = ZoomBitMap.init(alloc) };
     }
 
     pub fn deinit(self: *Params, alloc: Allocator) void {
@@ -151,9 +140,12 @@ pub const Params = struct {
         self.cy = str;
     }
 
-    pub fn span(self: Params, calcSize : u32) bignum.NativeFloat {
+    pub fn span(self: Params, calcSize: u32) bignum.NativeFloat {
         const fullSpan = std.math.scalbn(@floatCast(bignum.NativeFloat, 4.0), -@intCast(i16, self.zoom));
-        return fullSpan / @intToFloat(bignum.NativeFloat, @divExact(self.sx, calcSize));
+        return if (calcSize <= self.sx)
+            fullSpan / @intToFloat(bignum.NativeFloat, @divExact(self.sx, calcSize))
+        else
+            fullSpan * @intToFloat(bignum.NativeFloat, @divExact(calcSize, self.sx));
     }
 
     pub fn segments(_: Params, calcSize: u32, blockSize: u16) u32 {
@@ -180,7 +172,7 @@ pub const Params = struct {
         if (self.zoomBits.count() != 0) {
             const zoom = self.zoom;
             var it = self.zoomBits.iterator();
-            var bits : u16 = 64;
+            var bits: u16 = 64;
             while (it.next()) |ent| {
                 if (ent.key_ptr.* > zoom) break;
                 bits = ent.value_ptr.*;
@@ -201,7 +193,7 @@ pub const Params = struct {
     pub fn sortZoomBits(self: *Params) void {
         const Sorter = struct {
             entries: *ZoomBitMap.DataList,
-            pub fn lessThan(s: @This(), ai : usize, bi : usize) bool {
+            pub fn lessThan(s: @This(), ai: usize, bi: usize) bool {
                 return s.entries.get(ai).key < s.entries.get(bi).key;
             }
         };
@@ -214,10 +206,11 @@ pub const Params = struct {
         self.sortZoomBits();
     }
 
-    pub fn BlockWorkMaker(comptime T: type) type {
-        const BlockCalc = struct {
+    pub const BlockList = anyopaque;
+
+    fn Block(comptime T: type) type {
+        return struct {
             const Self = @This();
-            // const BigFloat = bignum.BigFixedFloat(T, 8);
             const Algo = MandelAlgo.init(T);
 
             // current data
@@ -254,7 +247,6 @@ pub const Params = struct {
                 while (oy < blockSize) : (oy += rectSize) {
                     var ox: u32 = 0;
                     while (ox < blockSize) : (ox += rectSize) {
-
                         var iters = data.iter(ox, oy);
                         if (iters == 0) {
                             if (self.datam1 != null and (ox & 1) == 0 and (oy & 1) == 0) {
@@ -263,10 +255,10 @@ pub const Params = struct {
                             }
                             if (iters == 0) {
                                 // reuse data from inner zoom?
-                                var inner : ?*const BlockData =
+                                var inner: ?*const BlockData =
                                     if (ox < halfBlockSize)
-                                        if (oy < halfBlockSize) self.datap1_00 else self.datap1_01
-                                        else if (oy < halfBlockSize) self.datap1_10 else self.datap1_11;
+                                    if (oy < halfBlockSize) self.datap1_00 else self.datap1_01
+                                else if (oy < halfBlockSize) self.datap1_10 else self.datap1_11;
                                 if (inner != null) {
                                     iters = inner.?.iter(((ox << 1) & (blockSize - 1)), ((oy << 1) & (blockSize - 1)));
                                 }
@@ -287,8 +279,8 @@ pub const Params = struct {
                 const data = self.data;
 
                 const blockSize = data.sz;
-                var all : u32 = 0;
-                var recalc : u32 = 0;
+                var all: u32 = 0;
+                var recalc: u32 = 0;
                 var oy: u32 = 0;
 
                 // inner loop
@@ -312,21 +304,30 @@ pub const Params = struct {
 
                 if (all > 0) {
                     const perc = recalc * 16 / all;
-                    std.debug.print("{s}", .{".123456789ABCDEF="[perc..perc+1]});
+                    std.debug.print("{s}", .{".123456789ABCDEF="[perc .. perc + 1]});
                 }
                 return recalc > 0;
             }
         };
+    }
 
-        const Blocks = struct {
+    /// Create the blocks visible with the current MandelParams and
+    /// a given maximal power-of-two window size.  This will add data to
+    /// any currently-existing layers at the current zoom level and
+    /// make use of the zoom level N-1 and N+1 to derive previously
+    /// calculated data.
+    pub fn BlockGenerator(comptime T: type) type {
+        return struct {
+            const BlockT = Block(T);
             const Self = @This();
             const BigFloatType = bignum.BigFixedFloat(T, 8);
 
-            blocks: []BlockCalc,
+            blocks: []BlockT,
             fxs: []T,
             fys: []T,
 
-            pub fn init(alloc: Allocator, params: Params, storage: *MandelStorage, calcSize : u32) !Self {
+            // calcSize may be smaller or larger than params.sx/sy
+            pub fn init(alloc: Allocator, params: Params, storage: *MandelStorage, calcSize: u32) !Self {
                 var fxs = std.ArrayList(T).init(alloc);
                 var fys = std.ArrayList(T).init(alloc);
 
@@ -342,7 +343,7 @@ pub const Params = struct {
                 const SEGS = params.segments(calcSize, blockSize);
                 const div = @intToFloat(bignum.NativeFloat, blockSize * SEGS);
                 var step = pspan / div;
-                std.debug.print("segs = {}, span = {}, div = {}, step = {}\n", .{ SEGS, pspan, div, step });
+                // std.debug.print("segs = {}, span = {}, div = {}, step = {}\n", .{ SEGS, pspan, div, step });
                 // per-pixel step
                 const floatStep = BigFloatType.fromFloat(step);
 
@@ -350,8 +351,9 @@ pub const Params = struct {
                 var layerM1 = if (params.zoom > 0) storage.get(params.zoom - 1) else null;
                 var layerP1 = storage.get(params.zoom + 1);
 
-                var fss = try bignum.printBig(alloc, T, floatStep); defer alloc.free(fss);
-                std.debug.print("fss = {s}\n", .{ fss });
+                // var fss = try bignum.printBig(alloc, T, floatStep);
+                // defer alloc.free(fss);
+                // std.debug.print("fss = {s}\n", .{fss});
 
                 // calculate X and Y coords once
                 {
@@ -370,13 +372,14 @@ pub const Params = struct {
                 }
 
                 // then make blocks that reference indices into those arrays
-                var blocks = std.ArrayList(BlockCalc).init(alloc);
+                var blocks = std.ArrayList(BlockT).init(alloc);
 
                 const rectSize: u32 = @as(u32, 1) << params.magShift;
 
                 // get a calculation order, for quickest results
                 // in the interesting area of the center
-                var xys: []XY = try alloc.alloc(XY, SEGS*SEGS); defer alloc.free(xys);
+                var xys: []XY = try alloc.alloc(XY, SEGS * SEGS);
+                defer alloc.free(xys);
                 boxfill.fillBoxesInnerToOuter(xys, SEGS);
 
                 // per block...
@@ -409,7 +412,7 @@ pub const Params = struct {
                     });
                 }
 
-                std.debug.print("Made {} blocks\n", .{blocks.items.len});
+                // std.debug.print("Made {} blocks\n", .{blocks.items.len});
                 return .{
                     .fxs = fxs.toOwnedSlice(),
                     .fys = fys.toOwnedSlice(),
@@ -423,7 +426,5 @@ pub const Params = struct {
                 alloc.free(self.blocks);
             }
         };
-
-        return Blocks;
     }
 };
