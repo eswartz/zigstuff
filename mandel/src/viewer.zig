@@ -295,7 +295,7 @@ pub const Viewer = struct {
         var wx : c_int = undefined;
         var wy : c_int = undefined;
         _ = sdl2.SDL_GetWindowSize(self.window, &wx, &wy);
-        const calcSize = @intCast(u32, std.math.max(wx, wy));
+        const calcSize = @intCast(u32, std.math.floorPowerOfTwo(c_int, std.math.max(wx, wy)));
         return calcSize;
     }
 
@@ -534,11 +534,23 @@ pub const Viewer = struct {
         while (sdl2.SDL_WaitEventTimeout(&event, 10) != 0) {
             var words = ps.words;
             var span = ps.span(self.getCalcSize());
-            if (event.type == sdl2.SDL_QUIT) {
+            switch (event.type) {
+            sdl2.SDL_QUIT => {
                 self.exit = true;
                 std.debug.print("Cancelling...\n", .{});
                 cont = true;
-            } else if (event.type == sdl2.SDL_KEYDOWN) {
+            },
+            sdl2.SDL_WINDOWEVENT => {
+                var we = @ptrCast(*sdl2.SDL_WindowEvent, &event);
+                switch (we.event) {
+                sdl2.SDL_WINDOWEVENT_EXPOSED, sdl2.SDL_WINDOWEVENT_RESIZED, sdl2.SDL_WINDOWEVENT_SHOWN => |e| {
+                    std.debug.print("Redrawing {}\n", .{e});
+                    try self.render();
+                },
+                else => {}
+                }
+            },
+            sdl2.SDL_KEYDOWN => {
                 var ke = @ptrCast(*sdl2.SDL_KeyboardEvent, &event);
                 const shiftAmt: u5 = if ((ke.keysym.mod & sdl2.KMOD_LSHIFT) != 0) (minShift + 3) else minShift;
 
@@ -624,7 +636,8 @@ pub const Viewer = struct {
                     },
                     else => cont = false,
                 };
-            } else if (event.type == sdl2.SDL_MOUSEBUTTONDOWN) {
+            },
+            sdl2.SDL_MOUSEBUTTONDOWN => {
                 var me = @ptrCast(*sdl2.SDL_MouseButtonEvent, &event);
                 const shift = (sdl2.SDL_GetModState() & sdl2.KMOD_SHIFT) != 0;
                 if (me.button == 1 and shift) {
@@ -633,6 +646,8 @@ pub const Viewer = struct {
                     try bignum.fadj(self.alloc, &ps.cx, words, span, (me.x + (blockSize >> 1)) & ~(blockSize - 1), @intCast(i32, ps.sx));
                     try bignum.fadj(self.alloc, &ps.cy, words, span, (me.y + (blockSize >> 1)) & ~(blockSize - 1), @intCast(i32, ps.sy));
                 }
+            },
+            else => {}
             }
         }
         return cont;
