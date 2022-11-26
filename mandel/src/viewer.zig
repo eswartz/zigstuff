@@ -85,7 +85,8 @@ pub const Viewer = struct {
                         autoTo = try std.fmt.parseInt(u16, argVal[idx+2..argVal.len], 10);
                         if (autoFrom > autoTo) return error.RangeBackwards;
                     } else {
-                        return error.InvalidRange;
+                        autoFrom = try std.fmt.parseInt(u16, argVal, 10);
+                        autoTo = autoFrom + 1;
                     }
                 } else if (std.mem.eql(u8, arg, "-u")) {
                     updateMetadata = true;
@@ -163,11 +164,11 @@ pub const Viewer = struct {
             rootParams.cy = try self.alloc.dupe(u8, self.params.cy);
             self.params.zoom = self.autoFrom;
             self.params.magShift = 0;
-            self.params.words = self.params.getIntSize();
+            self.params.words = self.params.getIntSizeForZoom();
 
             while (true) {
                 // load any previous data
-                if (try self.loadData()) {
+                if (try self.loadData()) |_| {
                     // restore guiding coords
                     self.params.setCx(self.alloc, try self.alloc.dupe(u8, rootParams.cx));
                     self.params.setCy(self.alloc, try self.alloc.dupe(u8, rootParams.cy));
@@ -240,9 +241,42 @@ pub const Viewer = struct {
     }
 
     fn renderBlock(self: Self, bpx: u32, bpy: u32, block: *cache.BlockData) void {
-        var rect : sdl2.SDL_FRect = undefined;
-
         const rectSize: u32 = @as(u32, 1) << self.params.magShift;
+
+        // predetermine if it's complete
+        var isComplete = true;
+        {
+            var oy: u32 = 0;
+            loop: while (oy < block.sz) : (oy += rectSize) {
+                var ox: u32 = 0;
+                while (ox < block.sz) : (ox += rectSize) {
+                    const current = block.iter(ox, oy);
+                    if (current <= 0 and -current < self.params.iters) {
+                        isComplete = false;
+                        break :loop;
+                    }
+                }
+            }
+        }
+
+        var rect : sdl2.SDL_Rect = .{ .x = @intCast(c_int, bpx), .y = @intCast(c_int, bpy), .w = block.sz, .h = block.sz };
+        {
+            // clear on-screen block
+            _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 0);
+            _ = sdl2.SDL_RenderFillRect(self.renderer, &rect);
+        }
+
+        const alpha : u8 = if (isComplete) 0xff else 0x40;
+        if (!isComplete) {
+            _ = sdl2.SDL_SetRenderDrawBlendMode(self.renderer, sdl2.SDL_BLENDMODE_BLEND);
+        } else {
+            _ = sdl2.SDL_SetRenderDrawBlendMode(self.renderer, sdl2.SDL_BLENDMODE_NONE);
+        }
+
+        // generate pixels as rects (per magShift)
+        rect.w = @intCast(c_int, rectSize);
+        rect.h = @intCast(c_int, rectSize);
+
         var oy: u32 = 0;
         while (oy < block.sz) : (oy += rectSize) {
             const py = bpy + oy;
@@ -254,19 +288,19 @@ pub const Viewer = struct {
 
                 var gamma: u8 = @intCast(u8, if (current < 0 or current > self.params.iters) 0 else current & 0xff);
                 // const a = @intCast(u8, if (current <= 0) 0x0 else if (current > self.params.iters) 0xff else @intCast(u32, (@intCast(u32, current) * 255 / self.params.iters)) & 0xff);
-                const a : u8 = 0xff;
+                const a : u8 = alpha;
                 const r = (gamma << 5) | (gamma >> 3);
                 const g = (gamma << 6) | (gamma >> 2);
                 const b = (gamma << 7) | (gamma >> 1);
                 _ = sdl2.SDL_SetRenderDrawColor(self.renderer, r, g, b, a);
 
-                rect.x = @intToFloat(f32, px);
-                rect.y = @intToFloat(f32, py);
-                rect.w = @intToFloat(f32, rectSize);
-                rect.h = @intToFloat(f32, rectSize);
-                _ = sdl2.SDL_RenderFillRectF(self.renderer, &rect);
+                rect.x = @intCast(c_int, px);
+                rect.y = @intCast(c_int, py);
+                _ = sdl2.SDL_RenderFillRect(self.renderer, &rect);
             }
         }
+
+        _ = sdl2.SDL_SetRenderDrawBlendMode(self.renderer, sdl2.SDL_BLENDMODE_NONE);
     }
 
     fn clearParamsT(self: *Self, comptime BigIntType : type, zoomOffs : i16) !void {
@@ -321,6 +355,12 @@ pub const Viewer = struct {
             self.renderBlock(block.px, block.py, block.data);
         }
 
+        _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 255, 255, 255, 32);
+
+        const calcSizeH = @intCast(c_int, self.getCalcSize()) >> 1;
+        _ = sdl2.SDL_RenderDrawLine(self.renderer, calcSizeH-8, calcSizeH, calcSizeH+8, calcSizeH);
+        _ = sdl2.SDL_RenderDrawLine(self.renderer, calcSizeH, calcSizeH-8, calcSizeH, calcSizeH+8);
+
         _ = sdl2.SDL_RenderPresent(self.renderer);
     }
 
@@ -333,9 +373,6 @@ pub const Viewer = struct {
 
     fn recalcT(self: *Self, comptime BigIntType: type) !bool {
         std.debug.print("Rendering with BigInt({s}) at x= {s}, y= {s}, zoom= {}, iters= {}...\n", .{ @typeName(BigIntType), self.params.cx, self.params.cy, self.params.zoom, self.params.iters });
-
-        _ = sdl2.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 0);
-        _ = sdl2.SDL_RenderClear(self.renderer);
 
         var timer = try std.time.Timer.start();
         const timeStart = timer.lap();
@@ -592,6 +629,7 @@ pub const Viewer = struct {
                             \\   [: -64 bits precision
                             \\   ]: +64 bits precision
                             \\   \: save zoom -> precision map
+                            \\   ctrl-\: save zoom -> iters map
                             \\   ctrl-a: align view to precision
                             \\   ctrl-r: clear render at (-1, 0, 1) zoom levels
                             \\   F5: save .json params
@@ -615,7 +653,7 @@ pub const Viewer = struct {
                     sdl2.SDLK_PAGEUP => ps.iters += if (shift) @intCast(u32, 250) else @intCast(u32, 50),
                     sdl2.SDLK_LEFTBRACKET => ps.words = if (words > 1) words - 1 else 1,
                     sdl2.SDLK_RIGHTBRACKET => ps.words = if (words < bignum.MAXWORDS) words + 1 else bignum.MAXWORDS,
-                    sdl2.SDLK_BACKSLASH => { try ps.recordZoomBits(); cont = false; },
+                    sdl2.SDLK_BACKSLASH => { if (ctrl) try ps.recordZoomIters() else try ps.recordZoomBits(); cont = false; },
                     sdl2.SDLK_a => if (ctrl) {
                         try bignum.falign(self.alloc, &ps.cx, words);
                         try bignum.falign(self.alloc, &ps.cy, words);
@@ -632,7 +670,7 @@ pub const Viewer = struct {
                         }
                     },
                     sdl2.SDLK_F4 => cont = try self.saveData(),
-                    sdl2.SDLK_F8 => { cont = try self.loadData(); if (!cont) try self.render(); },
+                    sdl2.SDLK_F8 => { cont = try self.loadData(); try self.render(); },
                     sdl2.SDLK_PAUSE => { self.setPause(!self.pause); cont = true; },
                     '0'...'9' => |v| ps.magShift = @intCast(u5, v - '0'),
                     sdl2.SDLK_F12 => {

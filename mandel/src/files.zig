@@ -25,11 +25,17 @@ pub const JsonFormat = struct {
         var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
         std.debug.print("file = {}, path = {s}\n", .{ file, path });
 
-        const KV = [2] u16;
+        const KV = [2] u32;
         var zoomBitValues : []KV = try alloc.alloc(KV, self.zoomBits.count());
         defer alloc.free(zoomBitValues);
         for (self.zoomBits.keys()) |k, i| {
             zoomBitValues[i] = KV{k, self.zoomBits.getEntry(k).?.value_ptr.*};
+        }
+
+        var zoomIterValues : []KV = try alloc.alloc(KV, self.zoomIters.count());
+        defer alloc.free(zoomIterValues);
+        for (self.zoomIters.keys()) |k, i| {
+            zoomIterValues[i] = KV{k, self.zoomIters.getEntry(k).?.value_ptr.*};
         }
 
         try json.stringify(.{
@@ -40,6 +46,7 @@ pub const JsonFormat = struct {
             .cy = self.cy,
             .words = self.words,
             .zoomBits = zoomBitValues,
+            .zoomIters = zoomIterValues,
         }, .{}, file.writer());
     }
 
@@ -63,6 +70,7 @@ pub const JsonFormat = struct {
         const jsonBits = root.get("words");
 
         const zoomBitArray = root.get("zoomBits");
+        const zoomIterArray = root.get("zoomIters");
 
         if (zoomBitArray) |zba| {
             self.zoomBits.clearAndFree();
@@ -76,10 +84,17 @@ pub const JsonFormat = struct {
             //     }
             // });
         }
-
         self.sortZoomBits();
 
-        self.words = if (jsonBits) |j|  std.math.min(bignum.MAXWORDS, @intCast(u16, j.Integer)) else self.getIntSize();
+        if (zoomIterArray) |zia| {
+            self.zoomIters.clearAndFree();
+            for (zia.Array.items) |kv| {
+                try self.zoomIters.put(@intCast(u16, kv.Array.items[0].Integer), @intCast(u32, kv.Array.items[1].Integer));
+            }
+        }
+        self.sortZoomIters();
+
+        self.words = if (jsonBits) |j|  std.math.min(bignum.MAXWORDS, @intCast(u16, j.Integer)) else self.getIntSizeForZoom();
 
     }
 
@@ -575,7 +590,6 @@ pub const RenderedFile = struct {
         maxIters.* = 0;
 
         const ps = self.storage.blockSize;
-        var c : u32 = 0;
         for (blockList.blocks) |block| {
             const px = block.px;
             const py = block.py;
@@ -592,8 +606,6 @@ pub const RenderedFile = struct {
                         minIters.* = std.math.min(minIters.*, iter);
                         maxIters.* = std.math.max(maxIters.*, @intCast(u32, iter));
                     }
-
-                    c += 1;
                 }
             }
         }

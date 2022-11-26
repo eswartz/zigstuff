@@ -39,30 +39,25 @@ pub const MandelAlgo = struct {
             /// many iterations were attempted.
             pub fn calcMandelbrot(creal: BigFloatType, cimag: BigFloatType, maxIters: u32) i32 {
                 const four: BigFloatType = BigFloat.fromFloat(4.0);
-                var iters: i32 = 0;
+                var iters: i32 = @intCast(i32, maxIters);
                 var real = creal;
                 var imag = cimag;
 
-                while (true) {
-                    var realsq = mul(real, real);
-                    var imagsq = mul(imag, imag);
-                    if (realsq + imagsq >= four)
-                        break;
-                    if (iters >= maxIters) {
-                        return -iters;
+                while (iters > 0) : (iters -= 1) {
+                    const realsq = mul(real, real);
+                    const imagsq = mul(imag, imag);
+                    if (realsq + imagsq >= four) {
+                        return @intCast(i32, maxIters) - iters + 1;
                     }
-                    var temp = mul(real, imag);
+
+                    const temp = mul(real, imag);
 
                     // r = (r'*r' - i*i) + cr
-                    var rriir = (realsq - imagsq);
-                    real = rriir +% creal;
+                    real = (realsq - imagsq) +% creal;
                     // i = (r'*i' * 2) + ci
-                    var ri2 = (temp + temp);
-                    imag = ri2 +% cimag;
-
-                    iters += 1;
+                    imag = (temp + temp) +% cimag;
                 }
-                return iters + 1;
+                return -@intCast(i32, maxIters);
             }
         };
     }
@@ -110,6 +105,7 @@ test "mb256_0" {
 
 pub const Params = struct {
     const ZoomBitMap = std.AutoArrayHashMap(u16, u16);
+    const ZoomIterMap = std.AutoArrayHashMap(u16, u32);
 
     sx: u32,
     sy: u32,
@@ -120,15 +116,28 @@ pub const Params = struct {
     cx: []u8,
     cy: []u8,
     zoomBits: ZoomBitMap,
+    zoomIters: ZoomIterMap,
 
     pub fn init(alloc: Allocator) !Params {
-        return Params{ .sx = 1024, .sy = 1024, .cx = try alloc.dupe(u8, ".0000000000000000"), .cy = try alloc.dupe(u8, ".0000000000000000"), .zoom = 0, .magShift = 2, .words = 1, .iters = 300, .zoomBits = ZoomBitMap.init(alloc) };
+        return Params{
+            .sx = 1024,
+            .sy = 1024,
+            .cx = try alloc.dupe(u8, ".0000000000000000"),
+            .cy = try alloc.dupe(u8, ".0000000000000000"),
+            .zoom = 0,
+            .magShift = 2,
+            .words = 1,
+            .iters = 300,
+            .zoomBits = ZoomBitMap.init(alloc),
+            .zoomIters = ZoomIterMap.init(alloc),
+        };
     }
 
     pub fn deinit(self: *Params, alloc: Allocator) void {
         alloc.free(self.cx);
         alloc.free(self.cy);
         self.zoomBits.deinit();
+        self.zoomIters.deinit();
     }
 
     pub fn setCx(self: *Params, alloc: Allocator, str: []u8) void {
@@ -154,21 +163,37 @@ pub const Params = struct {
 
     pub fn setZoom(self: *Params, zoom: u16) void {
         self.zoom = zoom;
-        self.words = self.getIntSize();
+        self.words = self.getIntSizeForZoom();
+        self.iters = self.getItersForZoom();
     }
 
     pub fn setZoomInteractive(self: *Params, zoom: u16) void {
         const curZoom = self.zoom;
         const curWords = self.words;
+        const curIters = self.iters;
         self.setZoom(zoom);
-        if (curZoom < zoom and self.words < curWords) {
-            // probably fell off the end
-            self.words = curWords;
+        if (curZoom < zoom) {
+            // see if we fell off the end of the map and restore larger values
+            if (self.words < curWords) {
+                // probably fell off the end
+                self.words = curWords;
+            }
+            if (self.iters < curIters) {
+                self.iters = curIters;
+            }
         }
     }
 
+    /// Get number of words needed
+    pub fn getDefaultIntSize(self: Params) u16 {
+        const zoom = self.zoom;
+        const size: u16 = 1 + ((zoom + std.math.log2_int(u32, self.sx)) >> 6);
+        std.debug.print("zoom={}, isize={}\n", .{ zoom, size });
+        return size;
+    }
+
     /// Get number of words configured for zoom
-    pub fn getIntSize(self: Params) u16 {
+    pub fn getIntSizeForZoom(self: Params) u16 {
         if (self.zoomBits.count() != 0) {
             const zoom = self.zoom;
             var it = self.zoomBits.iterator();
@@ -182,12 +207,11 @@ pub const Params = struct {
         return self.getDefaultIntSize();
     }
 
-    /// Get number of words needed
-    pub fn getDefaultIntSize(self: Params) u16 {
-        const zoom = self.zoom;
-        const size: u16 = 1 + ((zoom + std.math.log2_int(u32, self.sx)) >> 6);
-        std.debug.print("zoom={}, isize={}\n", .{ zoom, size });
-        return size;
+    /// Remember current zoom and bits in zoomBits
+    pub fn recordZoomBits(self: *Params) !void {
+        std.debug.print("Remembering zoom bits {} for level {}\n", .{self.words << 6, self.zoom});
+        try self.zoomBits.put(self.zoom, self.words << 6);
+        self.sortZoomBits();
     }
 
     pub fn sortZoomBits(self: *Params) void {
@@ -200,10 +224,42 @@ pub const Params = struct {
         self.zoomBits.sort(Sorter{ .entries = &self.zoomBits.unmanaged.entries });
     }
 
-    /// Remember current zoom and bits in zoomBits
-    pub fn recordZoomBits(self: *Params) !void {
-        try self.zoomBits.put(self.zoom, self.words << 6);
-        self.sortZoomBits();
+    /// Get iters configured for zoom
+    pub fn getItersForZoom(self: Params) u32 {
+        if (self.zoomIters.count() != 0) {
+            const zoom = self.zoom;
+            var it = self.zoomIters.iterator();
+            var prevZoom: u16 = 0;
+            var prevIters: u32 = 50 * zoom;
+            var nextZoom: u16 = 0;
+            var nextIters: u32 = 50 * zoom;
+            while (it.next()) |ent| {
+                prevZoom = nextZoom;
+                prevIters = nextIters;
+                nextZoom = ent.key_ptr.*;
+                nextIters = ent.value_ptr.*;
+                if (nextZoom > zoom) break;
+            }
+            return prevIters + (self.zoom - prevZoom) * (nextIters - prevIters) / (nextZoom - prevZoom);
+        }
+        return 50 * self.zoom;
+    }
+
+    /// Remember current zoom and iters in zoomIters
+    pub fn recordZoomIters(self: *Params) !void {
+        std.debug.print("Remembering zoom iters {} for level {}\n", .{self.iters, self.zoom});
+        try self.zoomIters.put(self.zoom, self.iters);
+        self.sortZoomIters();
+    }
+
+    pub fn sortZoomIters(self: *Params) void {
+        const Sorter = struct {
+            entries: *ZoomIterMap.DataList,
+            pub fn lessThan(s: @This(), ai: usize, bi: usize) bool {
+                return s.entries.get(ai).key < s.entries.get(bi).key;
+            }
+        };
+        self.zoomIters.sort(Sorter{ .entries = &self.zoomIters.unmanaged.entries });
     }
 
     pub const BlockList = anyopaque;
@@ -355,9 +411,6 @@ pub const Params = struct {
                 const pspan = params.span(calcSize);
                 std.debug.print("span = {}\n", .{pspan});
 
-                const fx0 = try bignum.parseBig(T, params.cx);
-                const fy0 = try bignum.parseBig(T, params.cy);
-
                 // split drawscape into segments
                 const blockSize = storage.blockSize;
                 const halfBlockSize = blockSize >> 1;
@@ -367,6 +420,12 @@ pub const Params = struct {
                 // std.debug.print("segs = {}, span = {}, div = {}, step = {}\n", .{ SEGS, pspan, div, step });
                 // per-pixel step
                 const floatStep = BigFloatType.fromFloat(step);
+
+                // get raw coords, aligned to available precision
+                const fx0 = try bignum.parseBig(T, params.cx) & -floatStep;
+                const fy0 = try bignum.parseBig(T, params.cy) & -floatStep;
+
+                std.debug.print("Center ==> {s}, {s}\n", .{ try bignum.printBig(alloc, T, fx0), try bignum.printBig(alloc, T, fy0) });
 
                 var layer = try storage.ensure(params.zoom, blockSize);
                 var layerM1 = if (params.zoom > 0) storage.get(params.zoom - 1) else null;
